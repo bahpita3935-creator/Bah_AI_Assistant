@@ -47,6 +47,7 @@ def render_assistant() -> None:
     st.header("Assistant")
     conversation_store, memory_store, preferences_store = get_stores()
     provider = OllamaProvider()
+    ollama_available = provider.ensure_running()
 
     if "assistant_preferences_loaded" not in st.session_state:
         st.session_state.user_preferences = preferences_store.load()
@@ -105,10 +106,26 @@ def render_assistant() -> None:
         )
     with right:
         st.caption("Statut IA")
-        if provider.is_available():
-            st.success(provider.name)
+        if ollama_available:
+            st.success("Connectée")
         else:
-            st.warning("Ollama indisponible")
+            st.error("Déconnectée")
+
+    if ollama_available:
+        available_models = provider.list_models()
+        if available_models:
+            st.caption("Modèles disponibles : " + ", ".join(available_models))
+    else:
+        st.warning(
+            "Ollama n'est pas lancé sur cette machine. "
+            "Démarrez Ollama, puis utilisez le bouton Actualiser."
+        )
+        if st.button(
+            "Actualiser le statut",
+            icon=":material/refresh:",
+            key="refresh_ollama_status",
+        ):
+            st.rerun()
 
     with st.expander("Préférences utilisateur"):
         with st.form("assistant_preferences_form"):
@@ -207,9 +224,19 @@ def render_assistant() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        if provider.is_available():
+        if ollama_available:
             with st.chat_message("assistant"):
                 try:
+                    if not provider.model_is_available(model):
+                        response = (
+                            f"Le modèle '{model}' n'est pas installé dans Ollama. "
+                            f"Installez-le avec : ollama pull {model}"
+                        )
+                        st.error(response)
+                        conversation.add_message("assistant", response)
+                        conversation_store.save(conversation)
+                        st.stop()
+
                     facts = memory_store.list()
                     messages = []
                     if facts:
@@ -260,7 +287,7 @@ def render_assistant() -> None:
                 response = (
                     "Ollama n'est pas disponible sur cette machine. "
                     "Installez-le, démarrez-le, puis installez un modèle "
-                    "avec `ollama pull llama3.2`."
+                    "avec `ollama pull phi3`."
                 )
                 st.warning(response)
                 conversation.add_message("assistant", response)

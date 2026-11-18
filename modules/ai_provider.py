@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import os
+import shutil
+import subprocess
+import time
 from collections.abc import Iterator
 from typing import Protocol
 
@@ -29,6 +33,94 @@ class OllamaProvider:
     def name(self) -> str:
         return "Ollama local"
 
+    def find_executable(self) -> str | None:
+        """Find Ollama on PATH or in common Windows installation folders."""
+        executable = shutil.which("ollama")
+        if executable:
+            return executable
+
+        candidates = [
+            os.environ.get("LOCALAPPDATA", "")
+            + r"\Programs\Ollama\ollama.exe",
+            os.environ.get("LOCALAPPDATA", "")
+            + r"\Microsoft\WinGet\Links\ollama.exe",
+            r"C:\Program Files\Ollama\ollama.exe",
+            r"C:\Program Files (x86)\Ollama\ollama.exe",
+            os.environ.get("USERPROFILE", "") + r"\.local\bin\ollama.exe",
+        ]
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def ensure_running(self, timeout_seconds: float = 10) -> bool:
+        """Start Ollama locally when an executable is available."""
+        if self.is_available():
+            return True
+
+        executable = self.find_executable()
+        if executable is None:
+            return False
+
+        try:
+            flags = subprocess.DETACHED_PROCESS if os.name == "nt" else 0
+            subprocess.Popen(
+                [executable, "serve"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+                close_fds=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.is_available():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def list_models(self) -> list[str]:
+        """Return the names of locally installed Ollama models."""
+        try:
+            request = urllib.request.Request(
+                f"{self.base_url}/api/tags",
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            models = data.get("models", [])
+            if not isinstance(models, list):
+                return []
+            names = [
+                model.get("name")
+                for model in models
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
+            return sorted(set(names))
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            OSError,
+        ):
+            return []
+
+    def model_is_available(self, model: str) -> bool:
+        """Return whether a model is present locally."""
+        if not model.strip():
+            return False
+        model = model.strip()
+        base_model = model.removesuffix(":latest")
+        for installed in self.list_models():
+            if installed == model:
+                return True
+            if installed.removesuffix(":latest") == base_model:
+                return True
+        return False
+
     def is_available(self) -> bool:
         try:
             request = urllib.request.Request(
@@ -37,13 +129,18 @@ class OllamaProvider:
             )
             with urllib.request.urlopen(request, timeout=2) as response:
                 return response.status == 200
-        except (urllib.error.URLError, TimeoutError):
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            OSError,
+        ):
             return False
 
     def stream(
         self,
         messages: list[dict[str, str]],
-        model: str = "llama3.2",
+        model: str = "phi3",
     ) -> Iterator[str]:
         payload = json.dumps(
             {

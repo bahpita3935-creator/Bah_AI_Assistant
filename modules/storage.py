@@ -160,7 +160,7 @@ class JsonPreferencesStore:
         "display_name": "",
         "language": "Français",
         "response_tone": "Professionnel",
-        "ollama_model": "llama3.2",
+        "ollama_model": "phi3",
         "context_messages": 20,
     }
 
@@ -222,7 +222,7 @@ class JsonPreferencesStore:
             saved["language"] = "Français"
         if saved["response_tone"] not in ("Professionnel", "Simple", "Technique"):
             saved["response_tone"] = "Professionnel"
-        saved["ollama_model"] = str(saved["ollama_model"]).strip() or "llama3.2"
+        saved["ollama_model"] = str(saved["ollama_model"]).strip() or "phi3"
 
         try:
             context_messages = int(saved["context_messages"])
