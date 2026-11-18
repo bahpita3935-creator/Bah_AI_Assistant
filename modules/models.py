@@ -54,11 +54,11 @@ class Conversation:
     def from_dict(cls, data: dict) -> "Conversation":
         messages = [
             Message(
-                role=message["role"],
-                content=message["content"],
-                created_at=message.get("created_at", utc_now()),
+                role=message_data["role"],
+                content=message_data["content"],
+                created_at=message_data.get("created_at", utc_now()),
             )
-            for message in data.get("messages", [])
+            for message_data in data.get("messages", [])
         ]
         return cls(
             id=data["id"],
