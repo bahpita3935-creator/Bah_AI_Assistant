@@ -14,3 +14,10 @@ __pycache__/
 
 # Local editor settings
 .vscode/
+
+# Editor extensions and installers
+*.vsix
+
+# Local application data
+data/conversations.json
+data/memory.json

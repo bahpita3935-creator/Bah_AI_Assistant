@@ -1,91 +1,84 @@
 import streamlit as st
 
+from modules.assistant import render_assistant
+from modules.business import render_business
+from modules.programmation import render_programmation
+from modules.projets import render_projets
+from modules.social_media import render_social_media
+
 st.set_page_config(
     page_title="BAH AI ASSISTANT",
-    page_icon="🤖",
-    layout="centered"
+    page_icon=":material/smart_toy:",
+    layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    [data-testid="stMain"] h1 {
-        font-size: clamp(1.8rem, 5vw, 2.75rem);
-        line-height: 1.15;
-        overflow-wrap: anywhere;
-    }
 
-    [data-testid="stMain"] h2,
-    [data-testid="stMain"] h3,
-    [data-testid="stMain"] [data-testid="stMarkdownContainer"] {
-        max-width: 100%;
-        overflow-wrap: anywhere;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-menu = st.sidebar.selectbox(
-    "Choisir un module",
-    [
-        "Accueil",
-        "Programmation",
-        "Business",
-        "Réseaux Sociaux",
-        "Projets BAH TECH"
-    ]
-)
-
-st.title("🤖 BAH AI ASSISTANT")
-st.subheader("Assistant IA personnel développé par Thierno Souleymane Bah.")
-
-if menu == "Accueil":
-    st.header("Fonctionnalités")
-    st.markdown(
-        """
-        - Assistance en programmation
-        - Assistance business
-        - Assistance réseaux sociaux
-        - Gestion des projets BAH TECH GROUP
-        """
+def render_home() -> None:
+    st.header("Bienvenue")
+    st.write(
+        "Assistant IA personnel de BAH TECH GROUP pour la programmation, "
+        "les activités business, les réseaux sociaux et la gestion de projets."
     )
 
-    st.header("Technologies")
-    st.markdown(
-        """
-        - Python
-        - Streamlit
-        - Git
-        - GitHub
-        """
+    columns = st.columns(4)
+    cards = (
+        (pages[1], "chat"),
+        (pages[2], "code"),
+        (pages[3], "store"),
+        (pages[5], "rocket_launch"),
     )
+    for column, (target_page, icon) in zip(columns, cards):
+        column.page_link(
+            target_page,
+            label=target_page.title,
+            icon=f":material/{icon}:",
+        )
 
-    st.header("Lancement")
-    st.code("python -m streamlit run app.py", language="powershell")
 
-elif menu == "Programmation":
-    st.header("💻 Programmation")
-    st.write("Python, Flutter, Node.js, SQL")
+pages = [
+    st.Page(
+        render_home,
+        title="Accueil",
+        icon=":material/home:",
+        url_path="accueil",
+        help="Présentation générale de BAH AI Assistant.",
+    ),
+    st.Page(
+        render_assistant,
+        title="Assistant",
+        icon=":material/smart_toy:",
+        url_path="assistant",
+        help="Discuter avec un assistant disponible et préparer une connexion Ollama locale.",
+    ),
+    st.Page(
+        render_programmation,
+        title="Programmation",
+        icon=":material/code:",
+        url_path="programmation",
+        help="Générer des consignes techniques structurées pour Python, SQL, Flutter et plus.",
+    ),
+    st.Page(
+        render_business,
+        title="Business",
+        icon=":material/store:",
+        url_path="business",
+        help="Construire une synthèse business, une proposition de valeur et un plan d'action.",
+    ),
+    st.Page(
+        render_social_media,
+        title="Réseaux sociaux",
+        icon=":material/campaign:",
+        url_path="reseaux-sociaux",
+        help="Préparer des publications adaptées à plusieurs plateformes.",
+    ),
+    st.Page(
+        render_projets,
+        title="Projets BAH TECH",
+        icon=":material/rocket_launch:",
+        url_path="projets-bah-tech",
+        help="Consulter et suivre le portefeuille de projets de BAH TECH GROUP.",
+    ),
+]
 
-elif menu == "Business":
-    st.header("💼 Business")
-    st.write("Gestion des entreprises")
-
-elif menu == "Réseaux Sociaux":
-    st.header("📱 Réseaux Sociaux")
-    st.write("Création de contenu")
-
-elif menu == "Projets BAH TECH":
-    st.header("🚀 Projets BAH TECH GROUP")
-
-    projets = [
-        "Bah Immo Gestion",
-        "Bahora Store",
-        "BhantalHub SaaS",
-        "Agro Transit Hub",
-        "Bah Studio AI"
-    ]
-
-    for projet in projets:
-        st.write("✅", projet)
+page = st.navigation(pages, position="sidebar")
+page.run()
