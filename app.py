@@ -26,12 +26,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🤖 ASSISTANT IA BAH")
-
-st.subheader(
-    "Assistant Personnel de Thierno Souleymane Bah"
-)
-
 menu = st.sidebar.selectbox(
     "Choisir un module",
     [
@@ -43,8 +37,32 @@ menu = st.sidebar.selectbox(
     ]
 )
 
+st.title("🤖 BAH AI ASSISTANT")
+st.subheader("Assistant IA personnel développé par Thierno Souleymane Bah.")
+
 if menu == "Accueil":
-    st.write("Bienvenue dans BAH AI ASSISTANT")
+    st.header("Fonctionnalités")
+    st.markdown(
+        """
+        - Assistance en programmation
+        - Assistance business
+        - Assistance réseaux sociaux
+        - Gestion des projets BAH TECH GROUP
+        """
+    )
+
+    st.header("Technologies")
+    st.markdown(
+        """
+        - Python
+        - Streamlit
+        - Git
+        - GitHub
+        """
+    )
+
+    st.header("Lancement")
+    st.code("python -m streamlit run app.py", language="powershell")
 
 elif menu == "Programmation":
     st.header("💻 Programmation")
