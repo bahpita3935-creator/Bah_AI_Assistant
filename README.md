@@ -38,6 +38,11 @@ ollama pull llama3.2
 La feuille de route complète est disponible dans
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
+Pour la prochaine architecture majeure, consulter :
+
+- [Feuille de route V3](docs/ROADMAP_V3.md)
+- [Backlog d'exécution V3](docs/V3_BACKLOG.md)
+
 ## Architecture
 
 ```text

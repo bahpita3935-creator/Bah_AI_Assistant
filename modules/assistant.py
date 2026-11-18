@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import urllib.error
+import json
 from pathlib import Path
 
 import streamlit as st
 
 from modules.ai_provider import OllamaProvider
-from modules.storage import JsonConversationStore, JsonMemoryStore
+from modules.storage import (
+    JsonConversationStore,
+    JsonMemoryStore,
+    JsonPreferencesStore,
+)
 
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
@@ -18,17 +23,39 @@ MEMORY_FILE = "memory.json"
 
 
 @st.cache_resource
-def get_stores() -> tuple[JsonConversationStore, JsonMemoryStore]:
+def get_stores() -> tuple[
+    JsonConversationStore,
+    JsonMemoryStore,
+    JsonPreferencesStore,
+]:
     return (
         JsonConversationStore(DATA_DIRECTORY / CONVERSATIONS_FILE),
         JsonMemoryStore(DATA_DIRECTORY / MEMORY_FILE),
+        JsonPreferencesStore(DATA_DIRECTORY / MEMORY_FILE),
     )
+
+
+def conversation_title(prompt: str) -> str:
+    """Create a concise local title for a new conversation."""
+    prompt = " ".join(prompt.strip().split())
+    if not prompt:
+        return "Nouvelle conversation"
+    return prompt[:60] + ("..." if len(prompt) > 60 else "")
 
 
 def render_assistant() -> None:
     st.header("Assistant")
-    conversation_store, memory_store = get_stores()
+    conversation_store, memory_store, preferences_store = get_stores()
     provider = OllamaProvider()
+
+    if "assistant_preferences_loaded" not in st.session_state:
+        st.session_state.user_preferences = preferences_store.load()
+        st.session_state.assistant_preferences_loaded = True
+
+    preferences = st.session_state.user_preferences
+    welcome_name = preferences["display_name"]
+    if welcome_name:
+        st.caption(f"Préférences chargées pour {welcome_name}")
 
     if "assistant_conversation_id" not in st.session_state:
         conversations = conversation_store.list()
@@ -72,7 +99,7 @@ def render_assistant() -> None:
     with left:
         model = st.text_input(
             "Modèle Ollama",
-            value="llama3.2",
+            value=preferences["ollama_model"],
             key="ollama_model",
             help="Nom du modèle installé sur votre machine Ollama.",
         )
@@ -82,6 +109,59 @@ def render_assistant() -> None:
             st.success(provider.name)
         else:
             st.warning("Ollama indisponible")
+
+    with st.expander("Préférences utilisateur"):
+        with st.form("assistant_preferences_form"):
+            display_name = st.text_input(
+                "Nom affiché",
+                value=preferences["display_name"],
+                key="pref_display_name",
+            )
+            language = st.selectbox(
+                "Langue",
+                ("Français", "English"),
+                index=0 if preferences["language"] == "Français" else 1,
+                key="pref_language",
+            )
+            response_tone = st.selectbox(
+                "Ton des réponses",
+                ("Professionnel", "Simple", "Technique"),
+                index=("Professionnel", "Simple", "Technique").index(
+                    preferences["response_tone"]
+                ),
+                key="pref_response_tone",
+            )
+            preference_model = st.text_input(
+                "Modèle Ollama préféré",
+                value=preferences["ollama_model"],
+                key="pref_ollama_model",
+            )
+            context_messages = st.slider(
+                "Messages récents envoyés au modèle",
+                min_value=1,
+                max_value=100,
+                value=int(preferences["context_messages"]),
+                key="pref_context_messages",
+            )
+            save_preferences = st.form_submit_button(
+                "Sauvegarder les préférences",
+                icon=":material/save:",
+                width="stretch",
+            )
+
+        if save_preferences:
+            saved_preferences = preferences_store.save(
+                {
+                    "display_name": display_name,
+                    "language": language,
+                    "response_tone": response_tone,
+                    "ollama_model": preference_model,
+                    "context_messages": context_messages,
+                }
+            )
+            st.session_state.user_preferences = saved_preferences
+            st.session_state.ollama_model = saved_preferences["ollama_model"]
+            st.success("Préférences sauvegardées.")
 
     toolbar_left, toolbar_right = st.columns([1, 1])
     with toolbar_left:
@@ -101,9 +181,28 @@ def render_assistant() -> None:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("Écrire votre demande")
-    if prompt:
+    with st.form("assistant_message_form", clear_on_submit=True):
+        prompt = st.text_area(
+            "Votre message",
+            key="assistant_user_message",
+            height=120,
+            placeholder="Posez une question ou décrivez votre demande...",
+        )
+        sent = st.form_submit_button(
+            "Envoyer",
+            icon=":material/send:",
+            type="primary",
+            key="send_assistant_message",
+            width="stretch",
+        )
+
+    if sent:
+        prompt = prompt.strip()
+
+    if sent and prompt:
         conversation.add_message("user", prompt)
+        if conversation.title == "Nouvelle conversation":
+            conversation.title = conversation_title(prompt)
         conversation_store.save(conversation)
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -118,7 +217,19 @@ def render_assistant() -> None:
                             {
                                 "role": "system",
                                 "content": "Mémoire locale de l'utilisateur : "
-                                + " ".join(facts),
+                                + " ".join(facts)
+                                + f". Langue : {preferences['language']}."
+                                + f" Ton : {preferences['response_tone']}.",
+                            }
+                        )
+                    else:
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    f"Langue : {preferences['language']}."
+                                    f" Ton : {preferences['response_tone']}."
+                                ),
                             }
                         )
                     messages.extend(
@@ -126,15 +237,24 @@ def render_assistant() -> None:
                             "role": message.role,
                             "content": message.content,
                         }
-                        for message in conversation.messages[-20:]
+                        for message in conversation.messages[
+                            -int(preferences["context_messages"]):
+                        ]
                     )
                     response = st.write_stream(
                         provider.stream(messages, model=model)
                     )
                     conversation.add_message("assistant", response)
                     conversation_store.save(conversation)
-                except (urllib.error.URLError, TimeoutError) as exc:
-                    st.error(f"Impossible de contacter Ollama : {exc}")
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    response = f"Impossible de contacter Ollama : {exc}"
+                    st.error(response)
+                    conversation.add_message("assistant", response)
+                    conversation_store.save(conversation)
         else:
             with st.chat_message("assistant"):
                 response = (
@@ -143,6 +263,8 @@ def render_assistant() -> None:
                     "avec `ollama pull llama3.2`."
                 )
                 st.warning(response)
+                conversation.add_message("assistant", response)
+                conversation_store.save(conversation)
 
     with st.expander("Mémoire locale"):
         fact = st.text_input(

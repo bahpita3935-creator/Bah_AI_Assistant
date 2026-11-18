@@ -1,10 +1,15 @@
 """Tests for pure feature helpers."""
 
 from modules.models import Conversation
+from modules.assistant import conversation_title
 from modules.business import build_business_brief
 from modules.programmation import build_programming_prompt
 from modules.social_media import build_social_post
-from modules.storage import JsonConversationStore, JsonMemoryStore
+from modules.storage import (
+    JsonConversationStore,
+    JsonMemoryStore,
+    JsonPreferencesStore,
+)
 
 
 def test_programming_prompt() -> None:
@@ -71,3 +76,39 @@ def test_conversation_serialization_round_trip() -> None:
 
     assert restored.id == conversation.id
     assert restored.messages[0].content == "Explique le projet"
+
+
+def test_conversation_title() -> None:
+    assert conversation_title("  Explique   Python  ") == "Explique Python"
+    assert conversation_title("") == "Nouvelle conversation"
+
+
+def test_preferences_save_and_reload(tmp_path) -> None:
+    store = JsonPreferencesStore(tmp_path / "memory.json")
+
+    saved = store.save(
+        {
+            "display_name": "Thierno",
+            "language": "Français",
+            "response_tone": "Technique",
+            "ollama_model": "qwen2.5",
+            "context_messages": 12,
+        }
+    )
+
+    assert saved["display_name"] == "Thierno"
+    assert JsonPreferencesStore(tmp_path / "memory.json").load() == saved
+
+
+def test_memory_store_preserves_preferences(tmp_path) -> None:
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    preferences_store.save({"display_name": "Bah"})
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+
+    memory_store.add("Préfère Python")
+
+    assert memory_store.list() == ["Préfère Python"]
+    assert (
+        JsonPreferencesStore(tmp_path / "memory.json").load()["display_name"]
+        == "Bah"
+    )

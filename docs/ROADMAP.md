@@ -59,3 +59,8 @@
 - Ollama avec modèles tels que `llama3.2`
 - SQLite pour les données locales
 - GitHub Actions pour CI/CD
+
+## Version 3.0 — Produit local complet
+
+La feuille de route détaillée vers la V3 est disponible dans
+[ROADMAP_V3.md](ROADMAP_V3.md).

@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Iterable
 
 from modules.models import Conversation
 
@@ -101,14 +100,18 @@ class JsonMemoryStore:
     def _read(self) -> dict:
         with self._lock:
             if not self.path.exists():
-                return {"facts": []}
+                return {"facts": [], "preferences": {}}
             try:
                 with self.path.open("r", encoding="utf-8") as file:
                     data = json.load(file)
             except (json.JSONDecodeError, OSError):
-                return {"facts": []}
+                return {"facts": [], "preferences": {}}
             facts = data.get("facts", []) if isinstance(data, dict) else []
-            return {"facts": facts if isinstance(facts, list) else []}
+            preferences = data.get("preferences", {}) if isinstance(data, dict) else {}
+            return {
+                "facts": facts if isinstance(facts, list) else [],
+                "preferences": preferences if isinstance(preferences, dict) else {},
+            }
 
     def _write(self, data: dict) -> None:
         with self._lock:
@@ -129,7 +132,9 @@ class JsonMemoryStore:
         if fact in facts:
             return False
         facts.insert(0, fact)
-        self._write({"facts": facts})
+        data = self._read()
+        data["facts"] = facts
+        self._write(data)
         return True
 
     def remove(self, fact: str) -> bool:
@@ -137,8 +142,97 @@ class JsonMemoryStore:
         if fact not in facts:
             return False
         facts.remove(fact)
-        self._write({"facts": facts})
+        data = self._read()
+        data["facts"] = facts
+        self._write(data)
         return True
 
     def clear(self) -> None:
-        self._write({"facts": []})
+        data = self._read()
+        data["facts"] = []
+        self._write(data)
+
+
+class JsonPreferencesStore:
+    """Persist and reload user preferences in the local memory file."""
+
+    DEFAULT_PREFERENCES = {
+        "display_name": "",
+        "language": "Français",
+        "response_tone": "Professionnel",
+        "ollama_model": "llama3.2",
+        "context_messages": 20,
+    }
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
+        if not self.path.exists():
+            self._write({"facts": [], "preferences": dict(self.DEFAULT_PREFERENCES)})
+        else:
+            data = self._read()
+            if not data.get("preferences"):
+                data["preferences"] = dict(self.DEFAULT_PREFERENCES)
+                self._write(data)
+
+    def _read(self) -> dict:
+        with self._lock:
+            if not self.path.exists():
+                return {"facts": [], "preferences": dict(self.DEFAULT_PREFERENCES)}
+            try:
+                with self.path.open("r", encoding="utf-8") as file:
+                    data = json.load(file)
+            except (json.JSONDecodeError, OSError):
+                return {"facts": [], "preferences": dict(self.DEFAULT_PREFERENCES)}
+            if not isinstance(data, dict):
+                return {"facts": [], "preferences": dict(self.DEFAULT_PREFERENCES)}
+            facts = data.get("facts", [])
+            preferences = data.get("preferences", {})
+            return {
+                "facts": facts if isinstance(facts, list) else [],
+                "preferences": (
+                    preferences if isinstance(preferences, dict) else {}
+                ),
+            }
+
+    def _write(self, data: dict) -> None:
+        with self._lock:
+            temporary_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+            with temporary_path.open("w", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+            os.replace(temporary_path, self.path)
+
+    def load(self) -> dict:
+        preferences = dict(self.DEFAULT_PREFERENCES)
+        saved = self._read()["preferences"]
+        preferences.update(
+            {key: value for key, value in saved.items() if key in preferences}
+        )
+        return preferences
+
+    def save(self, preferences: dict) -> dict:
+        saved = dict(self.DEFAULT_PREFERENCES)
+        for key in saved:
+            if key in preferences:
+                saved[key] = preferences[key]
+
+        saved["display_name"] = str(saved["display_name"]).strip()
+        if saved["language"] not in ("Français", "English"):
+            saved["language"] = "Français"
+        if saved["response_tone"] not in ("Professionnel", "Simple", "Technique"):
+            saved["response_tone"] = "Professionnel"
+        saved["ollama_model"] = str(saved["ollama_model"]).strip() or "llama3.2"
+
+        try:
+            context_messages = int(saved["context_messages"])
+        except (TypeError, ValueError):
+            context_messages = 20
+        saved["context_messages"] = max(1, min(context_messages, 100))
+
+        data = self._read()
+        data["preferences"] = saved
+        self._write(data)
+        return saved
+
+
