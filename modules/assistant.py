@@ -107,9 +107,9 @@ def render_assistant() -> None:
     with right:
         st.caption("Statut IA")
         if ollama_available:
-            st.success("Connectée")
+            st.success("✅ Ollama connecté")
         else:
-            st.error("Déconnectée")
+            st.error("❌ Ollama déconnecté")
 
     if ollama_available:
         available_models = provider.list_models()
@@ -195,8 +195,8 @@ def render_assistant() -> None:
             st.rerun()
 
     for message in conversation.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+        with st.chat_message(message.role):
+            st.markdown(message.content)
 
     with st.form("assistant_message_form", clear_on_submit=True):
         prompt = st.text_area(
@@ -277,6 +277,7 @@ def render_assistant() -> None:
                     urllib.error.URLError,
                     TimeoutError,
                     json.JSONDecodeError,
+                    RuntimeError,
                 ) as exc:
                     response = f"Impossible de contacter Ollama : {exc}"
                     st.error(response)

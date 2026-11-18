@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 import os
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from typing import Protocol
 
@@ -26,7 +26,7 @@ class AIProvider(Protocol):
 
 
 class OllamaProvider:
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, base_url: str = "http://127.0.0.1:11434") -> None:
         self.base_url = base_url.rstrip("/")
 
     @property
@@ -156,9 +156,21 @@ class OllamaProvider:
             method="POST",
         )
 
-        with urllib.request.urlopen(request, timeout=60) as response:
-            for raw_line in response:
-                data = json.loads(raw_line.decode("utf-8"))
-                if message := data.get("message"):
-                    if text := message.get("content"):
-                        yield text
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                for raw_line in response:
+                    data = json.loads(raw_line.decode("utf-8"))
+                    if error := data.get("error"):
+                        raise RuntimeError(f"Erreur Ollama : {error}")
+                    if message := data.get("message"):
+                        if text := message.get("content"):
+                            yield text
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                error = json.loads(body).get("error", body)
+            except json.JSONDecodeError:
+                error = body or exc.reason
+            raise RuntimeError(
+                f"Erreur API Ollama HTTP {exc.code} sur /api/chat : {error}"
+            ) from exc
