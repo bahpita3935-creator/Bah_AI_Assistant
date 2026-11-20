@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from agents.registry import AGENTS
 from modules import assistant
 from modules.models import Conversation
 from modules.assistant import conversation_title
@@ -299,6 +300,220 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
         ("user", "Question de test"),
         ("assistant", "Réponse de test"),
     ]
+
+
+@pytest.mark.parametrize("agent", AGENTS, ids=lambda agent: agent.id)
+def test_agent_selection_streams_and_preserves_v1_data(tmp_path, agent) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    preferences_store.save(
+        {"language": "Français", "response_tone": "Technique", "context_messages": 2}
+    )
+    memory_store.add("Préférence de test")
+    memory_before = (tmp_path / "memory.json").read_bytes()
+    conversation = conversation_store.create("Conversation V1")
+    conversation.add_message("user", "Ancienne question")
+    conversation.add_message("assistant", "Ancienne réponse")
+    conversation_store.save(conversation)
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append((messages, model))
+            yield "Réponse "
+            yield "spécialisée"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        assert app.selectbox(key="assistant_agent_id").value == "general"
+        app.selectbox(key="assistant_agent_id").select(agent.id).run()
+        app.text_area(key="assistant_user_message").set_value("Nouvelle question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+        assert not app.exception
+        assert app.selectbox(key="assistant_agent_id").value == agent.id
+
+        restored_app = AppTest.from_string(script).run()
+        assert not restored_app.exception
+        assert restored_app.selectbox(key="assistant_agent_id").value == "general"
+        assert len(restored_app.container(key="assistant_chat_history").chat_message) == 4
+
+    assert len(calls) == 1
+    messages, model = calls[0]
+    assert model == "phi3"
+    assert agent.instructions in messages[0]["content"]
+    assert "Préférence de test" in messages[0]["content"]
+    assert "Ton : Technique" in messages[0]["content"]
+    assert messages[1:] == [
+        {"role": "assistant", "content": "Ancienne réponse"},
+        {"role": "user", "content": "Nouvelle question"},
+    ]
+    restored = JsonConversationStore(tmp_path / "conversations.json").get(
+        conversation.id
+    )
+    assert restored is not None
+    assert [(message.role, message.content) for message in restored.messages] == [
+        ("user", "Ancienne question"),
+        ("assistant", "Ancienne réponse"),
+        ("user", "Nouvelle question"),
+        ("assistant", "Réponse spécialisée"),
+    ]
+    assert (tmp_path / "memory.json").read_bytes() == memory_before
+
+
+def test_general_assistant_keeps_v1_system_message(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    memory_store.add("Préférence V1")
+    calls = []
+
+    class FakeProvider:
+        def ensure_running(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append((messages, model))
+            yield "Réponse V1"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.text_area(key="assistant_user_message").set_value("Bonjour")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert calls == [
+        (
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Mémoire locale de l'utilisateur : Préférence V1."
+                        " Langue : Français. Ton : Professionnel."
+                    ),
+                },
+                {"role": "user", "content": "Bonjour"},
+            ],
+            "phi3",
+        )
+    ]
+
+
+def test_switching_agents_reuses_conversation_context(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append(messages)
+            yield "Réponse de test"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.selectbox(key="assistant_agent_id").select("programmation").run()
+        app.text_area(key="assistant_user_message").set_value("Question technique")
+        app.form_submit_button(key="send_assistant_message").click().run()
+        app.selectbox(key="assistant_agent_id").select("business").run()
+        app.text_area(key="assistant_user_message").set_value("Question business")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert len(calls) == 2
+    assert "agent Programmation" in calls[0][0]["content"]
+    assert "agent Business" in calls[1][0]["content"]
+    assert calls[1][1:] == [
+        {"role": "user", "content": "Question technique"},
+        {"role": "assistant", "content": "Réponse de test"},
+        {"role": "user", "content": "Question business"},
+    ]
+
+
+def test_agent_reports_provider_failure(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return False
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            raise AssertionError("Un fournisseur indisponible ne doit pas être appelé.")
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.selectbox(key="assistant_agent_id").select("business").run()
+        app.text_area(key="assistant_user_message").set_value("Question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert any("indisponible" in error.value for error in app.error)
+    messages = conversation_store.list()[0].messages
+    assert messages[0].content == "Question"
+    assert "indisponible" in messages[1].content
 
 
 def test_conversation_title() -> None:

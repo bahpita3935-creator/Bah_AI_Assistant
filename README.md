@@ -10,6 +10,15 @@ Assistant IA personnel pour BAH TECH GROUP, développé avec Python et Streamlit
 - **Réseaux sociaux** : brouillons de publications par plateforme.
 - **Projets BAH TECH** : portefeuille des projets du groupe.
 
+## Agents de l'assistant
+
+L'Assistant démarre en mode **Assistant Général**. Le sélecteur « Agent actif »
+permet de choisir Programmation, Business, Réseaux sociaux ou BAH TECH GROUP.
+Les agents utilisent le modèle Ollama sélectionné, la même mémoire locale et
+les messages récents de la conversation, y compris lors d'un changement d'agent.
+Le choix ne s'enregistre pas dans l'historique : il revient à Assistant Général
+dans une nouvelle session. Les agents ne publient ni n'exécutent d'actions.
+
 ## Installation
 
 ```powershell

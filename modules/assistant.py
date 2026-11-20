@@ -8,6 +8,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from agents.registry import AGENTS, get_agent
+from agents.service import stream_response
 from modules.ai_provider import OllamaProvider
 from modules.storage import (
     JsonConversationStore,
@@ -74,6 +76,19 @@ def render_assistant() -> None:
 
 def _render_assistant() -> None:
     st.header("Assistant")
+    agent_id = st.selectbox(
+        "Agent actif",
+        ("general", *(agent.id for agent in AGENTS)),
+        format_func=lambda value: (
+            "Assistant Général" if value == "general" else get_agent(value).name
+        ),
+        key="assistant_agent_id",
+        help=(
+            "Le contexte de la conversation est partagé entre les agents. "
+            "Le choix de l'agent n'est pas enregistré dans l'historique."
+        ),
+    )
+    st.caption("Les agents partagent l'historique de la conversation active.")
     conversation_store, memory_store, preferences_store = get_stores()
     provider = OllamaProvider()
     ollama_available = provider.ensure_running()
@@ -273,39 +288,50 @@ def _render_assistant() -> None:
                         st.stop()
 
                     facts = memory_store.list()
-                    messages = []
-                    if facts:
-                        messages.append(
+                    if agent_id == "general":
+                        messages = []
+                        if facts:
+                            messages.append(
+                                {
+                                    "role": "system",
+                                    "content": "Mémoire locale de l'utilisateur : "
+                                    + " ".join(facts)
+                                    + f". Langue : {preferences['language']}."
+                                    + f" Ton : {preferences['response_tone']}.",
+                                }
+                            )
+                        else:
+                            messages.append(
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        f"Langue : {preferences['language']}."
+                                        f" Ton : {preferences['response_tone']}."
+                                    ),
+                                }
+                            )
+                        messages.extend(
                             {
-                                "role": "system",
-                                "content": "Mémoire locale de l'utilisateur : "
-                                + " ".join(facts)
-                                + f". Langue : {preferences['language']}."
-                                + f" Ton : {preferences['response_tone']}.",
+                                "role": message.role,
+                                "content": message.content,
                             }
+                            for message in conversation.messages[
+                                -int(preferences["context_messages"]):
+                            ]
                         )
+                        stream = provider.stream(messages, model=model)
                     else:
-                        messages.append(
-                            {
-                                "role": "system",
-                                "content": (
-                                    f"Langue : {preferences['language']}."
-                                    f" Ton : {preferences['response_tone']}."
-                                ),
-                            }
+                        stream = stream_response(
+                            provider,
+                            agent_id,
+                            conversation.messages,
+                            facts=facts,
+                            language=preferences["language"],
+                            response_tone=preferences["response_tone"],
+                            context_messages=int(preferences["context_messages"]),
+                            model=model,
                         )
-                    messages.extend(
-                        {
-                            "role": message.role,
-                            "content": message.content,
-                        }
-                        for message in conversation.messages[
-                            -int(preferences["context_messages"]):
-                        ]
-                    )
-                    response = st.write_stream(
-                        provider.stream(messages, model=model)
-                    )
+                    response = st.write_stream(stream)
                     conversation.add_message("assistant", response)
                     conversation_store.save(conversation)
                 except (
@@ -313,6 +339,7 @@ def _render_assistant() -> None:
                     TimeoutError,
                     json.JSONDecodeError,
                     RuntimeError,
+                    ValueError,
                 ) as exc:
                     response = f"Impossible de contacter Ollama : {exc}"
                     st.error(response)
