@@ -13,6 +13,7 @@ from modules.storage import (
     JsonConversationStore,
     JsonMemoryStore,
     JsonPreferencesStore,
+    JsonStorageError,
 )
 
 
@@ -43,7 +44,35 @@ def conversation_title(prompt: str) -> str:
     return prompt[:60] + ("..." if len(prompt) > 60 else "")
 
 
+def start_new_conversation() -> None:
+    conversation_store, _, _ = get_stores()
+    conversation = conversation_store.create()
+    st.session_state.assistant_conversation_id = conversation.id
+    st.session_state.selected_conversation_id = conversation.id
+
+
+def delete_active_conversation() -> None:
+    conversation_store, _, _ = get_stores()
+    conversation_store.delete(st.session_state.assistant_conversation_id)
+    remaining = conversation_store.list()
+    replacement = remaining[0] if remaining else conversation_store.create()
+    st.session_state.assistant_conversation_id = replacement.id
+    st.session_state.selected_conversation_id = replacement.id
+
+
+def delete_memory_fact(fact: str) -> None:
+    _, memory_store, _ = get_stores()
+    memory_store.remove(fact)
+
+
 def render_assistant() -> None:
+    try:
+        _render_assistant()
+    except JsonStorageError as exc:
+        st.error(f"Erreur de stockage local : {exc}")
+
+
+def _render_assistant() -> None:
     st.header("Assistant")
     conversation_store, memory_store, preferences_store = get_stores()
     provider = OllamaProvider()
@@ -120,12 +149,11 @@ def render_assistant() -> None:
             "Ollama n'est pas lancé sur cette machine. "
             "Démarrez Ollama, puis utilisez le bouton Actualiser."
         )
-        if st.button(
+        st.button(
             "Actualiser le statut",
             icon=":material/refresh:",
             key="refresh_ollama_status",
-        ):
-            st.rerun()
+        )
 
     with st.expander("Préférences utilisateur"):
         with st.form("assistant_preferences_form"):
@@ -182,21 +210,25 @@ def render_assistant() -> None:
 
     toolbar_left, toolbar_right = st.columns([1, 1])
     with toolbar_left:
-        if st.button("Nouvelle conversation", icon=":material/add:", width="stretch"):
-            conversation = conversation_store.create()
-            st.session_state.assistant_conversation_id = conversation.id
-            st.rerun()
+        st.button(
+            "Nouvelle conversation",
+            icon=":material/add:",
+            width="stretch",
+            on_click=start_new_conversation,
+        )
     with toolbar_right:
-        if st.button("Supprimer la conversation", icon=":material/delete:", width="stretch"):
-            conversation_store.delete(conversation.id)
-            remaining = conversation_store.list()
-            replacement = remaining[0] if remaining else conversation_store.create()
-            st.session_state.assistant_conversation_id = replacement.id
-            st.rerun()
+        st.button(
+            "Supprimer la conversation",
+            icon=":material/delete:",
+            width="stretch",
+            on_click=delete_active_conversation,
+        )
 
-    for message in conversation.messages:
-        with st.chat_message(message.role):
-            st.markdown(message.content)
+    chat_history = st.container(key="assistant_chat_history")
+    with chat_history:
+        for message in conversation.messages:
+            with st.chat_message(message.role):
+                st.markdown(message.content)
 
     with st.form("assistant_message_form", clear_on_submit=True):
         prompt = st.text_area(
@@ -221,11 +253,14 @@ def render_assistant() -> None:
         if conversation.title == "Nouvelle conversation":
             conversation.title = conversation_title(prompt)
         conversation_store.save(conversation)
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        with chat_history:
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
         if ollama_available:
-            with st.chat_message("assistant"):
+            with chat_history:
+                assistant_message = st.chat_message("assistant")
+            with assistant_message:
                 try:
                     if not provider.model_is_available(model):
                         response = (
@@ -284,7 +319,9 @@ def render_assistant() -> None:
                     conversation.add_message("assistant", response)
                     conversation_store.save(conversation)
         else:
-            with st.chat_message("assistant"):
+            with chat_history:
+                assistant_message = st.chat_message("assistant")
+            with assistant_message:
                 response = (
                     "Ollama n'est pas disponible sur cette machine. "
                     "Installez-le, démarrez-le, puis installez un modèle "
@@ -308,10 +345,10 @@ def render_assistant() -> None:
         for stored_fact in memory_store.list():
             columns = st.columns([5, 1])
             columns[0].write(stored_fact)
-            if columns[1].button(
+            columns[1].button(
                 "Supprimer",
                 key=f"delete_memory_{stored_fact}",
                 width="stretch",
-            ):
-                memory_store.remove(stored_fact)
-                st.rerun()
+                on_click=delete_memory_fact,
+                args=(stored_fact,),
+            )

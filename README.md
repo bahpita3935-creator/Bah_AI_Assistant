@@ -15,15 +15,27 @@ Assistant IA personnel pour BAH TECH GROUP, développé avec Python et Streamlit
 ```powershell
 py -3.14 -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+## Lancement officiel (Windows PowerShell)
+
+L'application doit être lancée depuis la racine du projet avec son interpréteur
+`.venv`, sur le port `8501` uniquement :
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true
+```
+
+URL officielle : [http://127.0.0.1:8501](http://127.0.0.1:8501).
+Si le port est déjà utilisé, arrêtez l'instance existante au lieu de choisir un
+autre port ou un autre interpréteur.
 
 ## Tests
 
 ```powershell
-python -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 
 ## IA locale
