@@ -49,15 +49,37 @@ def conversation_title(prompt: str) -> str:
 def start_new_conversation() -> None:
     conversation_store, _, _ = get_stores()
     conversation = conversation_store.create()
+    cancel_conversation_deletion()
     st.session_state.assistant_conversation_id = conversation.id
     st.session_state.selected_conversation_id = conversation.id
 
 
+def request_conversation_deletion() -> None:
+    st.session_state.pending_delete_conversation_id = (
+        st.session_state.assistant_conversation_id
+    )
+
+
+def cancel_conversation_deletion() -> None:
+    st.session_state.pending_delete_conversation_id = None
+
+
 def delete_active_conversation() -> None:
+    target_id = st.session_state.get("pending_delete_conversation_id")
+    if (
+        target_id is None
+        or target_id != st.session_state.get("assistant_conversation_id")
+        or target_id != st.session_state.get("selected_conversation_id")
+    ):
+        cancel_conversation_deletion()
+        return
+
     conversation_store, _, _ = get_stores()
-    conversation_store.delete(st.session_state.assistant_conversation_id)
+    if not conversation_store.delete(target_id):
+        raise JsonStorageError("La conversation à supprimer est introuvable.")
     remaining = conversation_store.list()
     replacement = remaining[0] if remaining else conversation_store.create()
+    cancel_conversation_deletion()
     st.session_state.assistant_conversation_id = replacement.id
     st.session_state.selected_conversation_id = replacement.id
 
@@ -127,6 +149,13 @@ def _render_assistant() -> None:
         active = conversations[0] if conversations else conversation_store.create()
         st.session_state.assistant_conversation_id = active.id
 
+    pending_id = st.session_state.get("pending_delete_conversation_id")
+    if pending_id is not None and (
+        pending_id != st.session_state.assistant_conversation_id
+        or pending_id != st.session_state.get("selected_conversation_id")
+    ):
+        cancel_conversation_deletion()
+
     conversations = conversation_store.list()
     if conversations:
         selected_id = st.selectbox(
@@ -152,6 +181,7 @@ def _render_assistant() -> None:
                 + f" [{conversation_id}]"
             ),
             key="selected_conversation_id",
+            on_change=cancel_conversation_deletion,
             help="Reprendre une conversation enregistrée localement.",
         )
         st.session_state.assistant_conversation_id = selected_id
@@ -162,6 +192,7 @@ def _render_assistant() -> None:
     if conversation is None:
         conversation = conversation_store.create()
         st.session_state.assistant_conversation_id = conversation.id
+        cancel_conversation_deletion()
 
     left, right = st.columns([3, 1])
     with left:
@@ -255,8 +286,19 @@ def _render_assistant() -> None:
             "Supprimer la conversation",
             icon=":material/delete:",
             width="stretch",
-            on_click=delete_active_conversation,
+            on_click=request_conversation_deletion,
         )
+
+    if st.session_state.get("pending_delete_conversation_id") == conversation.id:
+        st.warning(
+            f"Supprimer définitivement la conversation « {conversation.title} » "
+            f"[{conversation.id}] ? Cette action est irréversible."
+        )
+        confirm, cancel = st.columns(2)
+        with confirm:
+            st.button("Confirmer la suppression", on_click=delete_active_conversation)
+        with cancel:
+            st.button("Annuler", on_click=cancel_conversation_deletion)
 
     chat_history = st.container(key="assistant_chat_history")
     with chat_history:

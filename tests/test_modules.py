@@ -374,6 +374,155 @@ def test_interrupted_stream_preserves_history_without_partial_answer(
     assert all("Texte partiel" not in content for _, content in messages)
 
 
+@pytest.fixture
+def deletion_app(tmp_path, request):
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    for index in range(getattr(request, "param", 3)):
+        conversation = conversation_store.create("Même titre")
+        conversation.add_message("user", f"Message {index}")
+        conversation_store.save(conversation)
+
+    class FakeProvider:
+        def ensure_running(self):
+            return False
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        yield app, conversation_store
+
+
+def test_delete_request_and_cancel_preserve_conversations(deletion_app) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] == target_id
+    assert any(target_id in warning.value for warning in app.warning)
+
+    next(button for button in app.button if button.label == "Annuler").click().run()
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+
+
+def test_confirm_deletes_only_target_with_duplicate_titles(deletion_app) -> None:
+    app, store = deletion_app
+    conversations = store.list()
+    target_id = conversations[1].id
+    app.selectbox(key="selected_conversation_id").select(target_id).run()
+    remaining = [item.to_dict() for item in conversations if item.id != target_id]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    assert store.get(target_id) is None
+    assert [item.to_dict() for item in store.list()] == remaining
+    assert app.session_state["assistant_conversation_id"] == remaining[0]["id"]
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0]["id"]
+    assert app.session_state["pending_delete_conversation_id"] is None
+    app.run()
+    assert not app.exception
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0]["id"]
+
+
+def test_changing_selection_cancels_pending_deletion(deletion_app) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+    other_id = next(item.id for item in store.list() if item.id != target_id)
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    app.selectbox(key="selected_conversation_id").select(other_id).run()
+    assert not app.exception
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+    app.selectbox(key="selected_conversation_id").select(target_id).run()
+    assert store.path.read_bytes() == original
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+
+
+@pytest.mark.parametrize(
+    "changed_state", ["assistant_conversation_id", "selected_conversation_id"]
+)
+def test_confirm_rejects_changed_active_or_selection(deletion_app, changed_state) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+    other_id = next(item.id for item in store.list() if item.id != target_id)
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    app.session_state[changed_state] = other_id
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] is None
+
+
+def test_new_conversation_cancels_pending_deletion(deletion_app) -> None:
+    app, store = deletion_app
+    original = [item.to_dict() for item in store.list()]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Nouvelle conversation"
+    ).click().run()
+
+    assert not app.exception
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+    for conversation in original:
+        restored = store.get(conversation["id"])
+        assert restored is not None
+        assert restored.to_dict() == conversation
+
+
+@pytest.mark.parametrize("deletion_app", [1], indirect=True)
+def test_confirm_deleting_last_conversation_creates_empty_one(deletion_app) -> None:
+    app, store = deletion_app
+    target_id = app.session_state["assistant_conversation_id"]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    remaining = store.list()
+    assert len(remaining) == 1
+    assert remaining[0].id != target_id
+    assert remaining[0].messages == []
+    assert app.session_state["assistant_conversation_id"] == remaining[0].id
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0].id
+
+
 @pytest.mark.parametrize("agent_id", ["general", "business"])
 def test_new_conversation_isolated_with_duplicate_titles(tmp_path, agent_id) -> None:
     conversation_store = JsonConversationStore(tmp_path / "conversations.json")
