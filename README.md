@@ -14,8 +14,11 @@ Assistant IA personnel pour BAH TECH GROUP, développé avec Python et Streamlit
 
 L'Assistant démarre en mode **Assistant Général**. Le sélecteur « Agent actif »
 permet de choisir Programmation, Business, Réseaux sociaux ou BAH TECH GROUP.
-Les agents utilisent le modèle Ollama sélectionné, la même mémoire locale et
-les messages récents de la conversation, y compris lors d'un changement d'agent.
+Chaque agent est invité à se présenter comme BAH AI ASSISTANT et à indiquer,
+sur demande, le modèle local sélectionné via Ollama.
+Les agents utilisent le modèle Ollama sélectionné et les messages récents de la
+conversation, y compris lors d'un changement d'agent. Les faits de la mémoire
+locale restent enregistrés mais ne sont pas automatiquement envoyés au modèle.
 Le choix ne s'enregistre pas dans l'historique : il revient à Assistant Général
 dans une nouvelle session. Les agents ne publient ni n'exécutent d'actions.
 

@@ -147,6 +147,8 @@ class OllamaProvider:
                 "model": model,
                 "messages": messages,
                 "stream": True,
+                "keep_alive": "10m",
+                "options": {"num_predict": 256, "temperature": 0.7},
             }
         ).encode("utf-8")
         request = urllib.request.Request(

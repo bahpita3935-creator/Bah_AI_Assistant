@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from agents.registry import AGENTS, get_agent
-from agents.service import stream_response
+from agents.service import identity_instruction, stream_response
 from modules.ai_provider import OllamaProvider
 from modules.storage import (
     JsonConversationStore,
@@ -67,6 +67,26 @@ def delete_memory_fact(fact: str) -> None:
     memory_store.remove(fact)
 
 
+def save_assistant_preferences() -> None:
+    try:
+        _, _, preferences_store = get_stores()
+        saved = preferences_store.save(
+            {
+                "display_name": st.session_state.pref_display_name,
+                "language": st.session_state.pref_language,
+                "response_tone": st.session_state.pref_response_tone,
+                "ollama_model": st.session_state.pref_ollama_model,
+                "context_messages": st.session_state.pref_context_messages,
+            }
+        )
+    except JsonStorageError as exc:
+        st.session_state.assistant_preferences_error = str(exc)
+        return
+    st.session_state.user_preferences = saved
+    st.session_state.ollama_model = saved["ollama_model"]
+    st.session_state.assistant_preferences_error = None
+
+
 def render_assistant() -> None:
     try:
         _render_assistant()
@@ -120,13 +140,16 @@ def _render_assistant() -> None:
                 ),
                 0,
             ),
-            format_func=lambda conversation_id: next(
-                (
-                    item.title
-                    for item in conversations
-                    if item.id == conversation_id
-                ),
-                "Conversation",
+            format_func=lambda conversation_id: (
+                next(
+                    (
+                        item.title
+                        for item in conversations
+                        if item.id == conversation_id
+                    ),
+                    "Conversation",
+                )
+                + f" [{conversation_id}]"
             ),
             key="selected_conversation_id",
             help="Reprendre une conversation enregistrée localement.",
@@ -172,18 +195,18 @@ def _render_assistant() -> None:
 
     with st.expander("Préférences utilisateur"):
         with st.form("assistant_preferences_form"):
-            display_name = st.text_input(
+            st.text_input(
                 "Nom affiché",
                 value=preferences["display_name"],
                 key="pref_display_name",
             )
-            language = st.selectbox(
+            st.selectbox(
                 "Langue",
                 ("Français", "English"),
                 index=0 if preferences["language"] == "Français" else 1,
                 key="pref_language",
             )
-            response_tone = st.selectbox(
+            st.selectbox(
                 "Ton des réponses",
                 ("Professionnel", "Simple", "Technique"),
                 index=("Professionnel", "Simple", "Technique").index(
@@ -191,12 +214,12 @@ def _render_assistant() -> None:
                 ),
                 key="pref_response_tone",
             )
-            preference_model = st.text_input(
+            st.text_input(
                 "Modèle Ollama préféré",
                 value=preferences["ollama_model"],
                 key="pref_ollama_model",
             )
-            context_messages = st.slider(
+            st.slider(
                 "Messages récents envoyés au modèle",
                 min_value=1,
                 max_value=100,
@@ -207,21 +230,17 @@ def _render_assistant() -> None:
                 "Sauvegarder les préférences",
                 icon=":material/save:",
                 width="stretch",
+                on_click=save_assistant_preferences,
             )
 
         if save_preferences:
-            saved_preferences = preferences_store.save(
-                {
-                    "display_name": display_name,
-                    "language": language,
-                    "response_tone": response_tone,
-                    "ollama_model": preference_model,
-                    "context_messages": context_messages,
-                }
-            )
-            st.session_state.user_preferences = saved_preferences
-            st.session_state.ollama_model = saved_preferences["ollama_model"]
-            st.success("Préférences sauvegardées.")
+            if st.session_state.assistant_preferences_error:
+                st.error(
+                    "Erreur de stockage local : "
+                    + st.session_state.assistant_preferences_error
+                )
+            else:
+                st.success("Préférences sauvegardées.")
 
     toolbar_left, toolbar_right = st.columns([1, 1])
     with toolbar_left:
@@ -287,29 +306,17 @@ def _render_assistant() -> None:
                         conversation_store.save(conversation)
                         st.stop()
 
-                    facts = memory_store.list()
                     if agent_id == "general":
-                        messages = []
-                        if facts:
-                            messages.append(
-                                {
-                                    "role": "system",
-                                    "content": "Mémoire locale de l'utilisateur : "
-                                    + " ".join(facts)
-                                    + f". Langue : {preferences['language']}."
-                                    + f" Ton : {preferences['response_tone']}.",
-                                }
-                            )
-                        else:
-                            messages.append(
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        f"Langue : {preferences['language']}."
-                                        f" Ton : {preferences['response_tone']}."
-                                    ),
-                                }
-                            )
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    f"{identity_instruction(model)} "
+                                    f"Langue : {preferences['language']}."
+                                    f" Ton : {preferences['response_tone']}."
+                                ),
+                            }
+                        ]
                         messages.extend(
                             {
                                 "role": message.role,
@@ -325,7 +332,7 @@ def _render_assistant() -> None:
                             provider,
                             agent_id,
                             conversation.messages,
-                            facts=facts,
+                            facts=(),
                             language=preferences["language"],
                             response_tone=preferences["response_tone"],
                             context_messages=int(preferences["context_messages"]),

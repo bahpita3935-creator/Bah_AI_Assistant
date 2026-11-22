@@ -99,6 +99,8 @@ def test_stream_uses_local_chat_endpoint_and_phi3_payload() -> None:
     assert payload["model"] == "phi3"
     assert payload["messages"] == messages
     assert payload["stream"] is True
+    assert payload["keep_alive"] == "10m"
+    assert payload["options"] == {"num_predict": 256, "temperature": 0.7}
     assert result == "Bonjour phi3"
 
 

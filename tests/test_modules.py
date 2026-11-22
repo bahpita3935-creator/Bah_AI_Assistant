@@ -291,7 +291,7 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
     ):
         app = AppTest.from_string(script).run()
         app.text_area(key="assistant_user_message").set_value("Question de test")
-        app.form_submit_button(key="send_assistant_message").click().run()
+        app.form_submit_button(key="send_assistant_message").click().run(timeout=15)
 
     assert not app.exception
     assert len(app.container(key="assistant_chat_history").chat_message) == 2
@@ -300,6 +300,99 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
         ("user", "Question de test"),
         ("assistant", "Réponse de test"),
     ]
+
+
+@pytest.mark.parametrize("agent_id", ["general", "business"])
+def test_new_conversation_isolated_with_duplicate_titles(tmp_path, agent_id) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    preferences_store.save({"context_messages": 5})
+    memory_store.add("Ancien contexte marketing mémorisé")
+    memory_before = (tmp_path / "memory.json").read_bytes()
+    old_conversations = []
+    for content in ("Ancienne campagne marketing", "Ancien produit marketing"):
+        conversation = conversation_store.create()
+        conversation.add_message("user", content)
+        conversation_store.save(conversation)
+        old_conversations.append(conversation)
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append(messages)
+            yield "Nouvelle réponse"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.selectbox(key="selected_conversation_id").select(
+            old_conversations[0].id
+        ).run()
+        assert app.session_state["assistant_conversation_id"] == old_conversations[0].id
+        app.selectbox(key="selected_conversation_id").select(
+            old_conversations[1].id
+        ).run()
+        assert app.session_state["assistant_conversation_id"] == old_conversations[1].id
+
+        next(
+            button for button in app.button if button.label == "Nouvelle conversation"
+        ).click().run()
+        new_id = app.session_state["assistant_conversation_id"]
+        assert new_id not in {conversation.id for conversation in old_conversations}
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        new_conversation = conversation_store.get(new_id)
+        assert new_conversation is not None
+        assert not new_conversation.messages
+
+        app.run()
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        app.selectbox(key="assistant_agent_id").select(agent_id).run()
+        app.text_area(key="assistant_user_message").set_value("Question nouvelle")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+        assert not app.exception
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        app.run()
+        assert not app.exception
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+
+    assert len(calls) == 1
+    assert [message["role"] for message in calls[0]] == ["system", "user"]
+    assert calls[0][1]["content"] == "Question nouvelle"
+    assert all("marketing" not in message["content"].lower() for message in calls[0])
+    for old in old_conversations:
+        restored = conversation_store.get(old.id)
+        assert restored is not None
+        assert restored.to_dict() == old.to_dict()
+    new_conversation = conversation_store.get(new_id)
+    assert new_conversation is not None
+    assert [(message.role, message.content) for message in new_conversation.messages] == [
+        ("user", "Question nouvelle"),
+        ("assistant", "Nouvelle réponse"),
+    ]
+    assert (tmp_path / "memory.json").read_bytes() == memory_before
+    assert memory_store.list() == ["Ancien contexte marketing mémorisé"]
 
 
 @pytest.mark.parametrize("agent", AGENTS, ids=lambda agent: agent.id)
@@ -346,6 +439,7 @@ def test_agent_selection_streams_and_preserves_v1_data(tmp_path, agent) -> None:
         app = AppTest.from_string(script).run()
         assert app.selectbox(key="assistant_agent_id").value == "general"
         app.selectbox(key="assistant_agent_id").select(agent.id).run()
+        app.text_input(key="ollama_model").set_value("modele-test")
         app.text_area(key="assistant_user_message").set_value("Nouvelle question")
         app.form_submit_button(key="send_assistant_message").click().run()
         assert not app.exception
@@ -358,9 +452,12 @@ def test_agent_selection_streams_and_preserves_v1_data(tmp_path, agent) -> None:
 
     assert len(calls) == 1
     messages, model = calls[0]
-    assert model == "phi3"
+    assert model == "modele-test"
+    assert "BAH AI ASSISTANT" in messages[0]["content"]
+    assert "modele-test" in messages[0]["content"]
+    assert "via Ollama" in messages[0]["content"]
     assert agent.instructions in messages[0]["content"]
-    assert "Préférence de test" in messages[0]["content"]
+    assert "Préférence de test" not in messages[0]["content"]
     assert "Ton : Technique" in messages[0]["content"]
     assert messages[1:] == [
         {"role": "assistant", "content": "Ancienne réponse"},
@@ -379,7 +476,16 @@ def test_agent_selection_streams_and_preserves_v1_data(tmp_path, agent) -> None:
     assert (tmp_path / "memory.json").read_bytes() == memory_before
 
 
-def test_general_assistant_keeps_v1_system_message(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("model", "question"),
+    [
+        ("phi3", "Qui es-tu ?"),
+        ("autre-modele", "Quel modèle utilises-tu ?"),
+    ],
+)
+def test_general_assistant_excludes_saved_memory_from_system_message(
+    tmp_path, model, question
+) -> None:
     conversation_store = JsonConversationStore(tmp_path / "conversations.json")
     memory_store = JsonMemoryStore(tmp_path / "memory.json")
     preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
@@ -406,25 +512,64 @@ def test_general_assistant_keeps_v1_system_message(tmp_path) -> None:
         "modules.assistant.OllamaProvider", FakeProvider
     ):
         app = AppTest.from_string(script).run()
-        app.text_area(key="assistant_user_message").set_value("Bonjour")
+        app.text_input(key="ollama_model").set_value(model)
+        app.text_area(key="assistant_user_message").set_value(question)
         app.form_submit_button(key="send_assistant_message").click().run()
 
     assert not app.exception
-    assert calls == [
-        (
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Mémoire locale de l'utilisateur : Préférence V1."
-                        " Langue : Français. Ton : Professionnel."
-                    ),
-                },
-                {"role": "user", "content": "Bonjour"},
-            ],
-            "phi3",
-        )
-    ]
+    assert len(calls) == 1
+    messages, selected_model = calls[0]
+    assert selected_model == model
+    assert "BAH AI ASSISTANT" in messages[0]["content"]
+    assert model in messages[0]["content"]
+    assert "via Ollama" in messages[0]["content"]
+    assert (
+        f"J'utilise le modèle {model}, exécuté localement via Ollama"
+        in messages[0]["content"]
+    )
+    assert "Langue : Français. Ton : Professionnel." in messages[0]["content"]
+    assert "Préférence V1" not in messages[0]["content"]
+    assert messages[1:] == [{"role": "user", "content": question}]
+    assert memory_store.list() == ["Préférence V1"]
+
+
+def test_saving_context_preferences_updates_model_without_widget_error(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    conversation_store.create()
+
+    class FakeProvider:
+        def ensure_running(self):
+            return False
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.slider(key="pref_context_messages").set_value(5)
+        app.text_input(key="pref_ollama_model").set_value("test-model")
+        assert preferences_store.load()["context_messages"] == 20
+        app.form_submit_button[0].click().run()
+
+        assert not app.exception
+        assert preferences_store.load()["context_messages"] == 5
+        assert app.text_input(key="ollama_model").value == "test-model"
+        assert app.slider(key="pref_context_messages").value == 5
+        assert app.success
+
+        with patch.object(
+            preferences_store, "save", side_effect=JsonStorageError("test")
+        ):
+            app.slider(key="pref_context_messages").set_value(7)
+            app.form_submit_button[0].click().run()
+        assert not app.exception
+        assert preferences_store.load()["context_messages"] == 5
+        assert app.text_input(key="ollama_model").value == "test-model"
+        assert any("Erreur de stockage local" in error.value for error in app.error)
+        assert not app.success
 
 
 def test_switching_agents_reuses_conversation_context(tmp_path) -> None:
