@@ -1,6 +1,7 @@
 """Tests for assistant features and UI helpers."""
 
 from concurrent.futures import ThreadPoolExecutor
+from http.client import IncompleteRead
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from streamlit.testing.v1 import AppTest
 
 from agents.registry import AGENTS
 from modules import assistant
+from modules.ai_provider import OllamaProvider
 from modules.models import Conversation
 from modules.assistant import conversation_title
 from modules.business import build_business_brief
@@ -300,6 +302,76 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
         ("user", "Question de test"),
         ("assistant", "Réponse de test"),
     ]
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "ollama_error", "http_interruption"])
+def test_interrupted_stream_preserves_history_without_partial_answer(
+    tmp_path, failure
+) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    conversation = conversation_store.create("Historique")
+    conversation.add_message("user", "Question précédente")
+    conversation.add_message("assistant", "Réponse précédente")
+    conversation_store.save(conversation)
+
+    class FakeProvider(OllamaProvider):
+        def ensure_running(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+    class InterruptedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def __iter__(self):
+            yield b'{"message":{"content":"Texte partiel"},"done":false}\n'
+            if failure == "ollama_error":
+                yield b'{"error":"generation interrompue"}\n'
+            elif failure == "http_interruption":
+                raise IncompleteRead(b"", 10)
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ), patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=InterruptedResponse(),
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.text_area(key="assistant_user_message").set_value("Nouvelle question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert app.error
+    expected_error = {
+        "incomplete": "réponse Ollama est incomplète",
+        "ollama_error": "generation interrompue",
+        "http_interruption": "flux Ollama a été interrompu",
+    }[failure]
+    assert expected_error in app.error[0].value
+    restored = conversation_store.get(conversation.id)
+    assert restored is not None
+    messages = [(message.role, message.content) for message in restored.messages]
+    assert messages[:3] == [
+        ("user", "Question précédente"),
+        ("assistant", "Réponse précédente"),
+        ("user", "Nouvelle question"),
+    ]
+    assert len(messages) == 4
+    assert messages[3][0] == "assistant"
+    assert messages[3][1] == app.error[0].value
+    assert all("Texte partiel" not in content for _, content in messages)
 
 
 @pytest.mark.parametrize("agent_id", ["general", "business"])

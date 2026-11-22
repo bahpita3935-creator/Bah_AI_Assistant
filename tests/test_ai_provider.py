@@ -2,8 +2,11 @@
 
 import io
 import json
+from http.client import IncompleteRead
 from unittest.mock import patch
 from urllib.error import HTTPError
+
+import pytest
 
 from modules.ai_provider import OllamaProvider
 
@@ -24,6 +27,9 @@ class FakeResponse:
 
 
 class FakeStreamingResponse:
+    def __init__(self, lines=None) -> None:
+        self.lines = lines
+
     def __enter__(self):
         return self
 
@@ -31,8 +37,11 @@ class FakeStreamingResponse:
         return None
 
     def __iter__(self):
-        yield b'{"message":{"role":"assistant","content":"Bonjour"},"done":false}\n'
-        yield b'{"message":{"role":"assistant","content":" phi3"},"done":true}\n'
+        if self.lines is None:
+            yield b'{"message":{"role":"assistant","content":"Bonjour"},"done":false}\n'
+            yield b'{"message":{"role":"assistant","content":" phi3"},"done":true}\n'
+        else:
+            yield from self.lines
 
 
 def test_ollama_is_available_when_tags_endpoint_returns_ok() -> None:
@@ -102,6 +111,78 @@ def test_stream_uses_local_chat_endpoint_and_phi3_payload() -> None:
     assert payload["keep_alive"] == "10m"
     assert payload["options"] == {"num_predict": 256, "temperature": 0.7}
     assert result == "Bonjour phi3"
+
+
+@pytest.mark.parametrize("reason", ["stop", "length"])
+def test_stream_accepts_terminal_reasons_and_yields_terminal_content(reason) -> None:
+    lines = [
+        b'{"message":{"content":"Bonjour"},"done":false}\n',
+        json.dumps(
+            {"message": {"content": " !"}, "done": True, "done_reason": reason}
+        ).encode("utf-8"),
+    ]
+    with patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=FakeStreamingResponse(lines),
+    ):
+        assert list(OllamaProvider().stream([])) == ["Bonjour", " !"]
+
+
+def test_stream_accepts_empty_completed_response() -> None:
+    with patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=FakeStreamingResponse([b'{"done":true}\n']),
+    ):
+        assert list(OllamaProvider().stream([])) == []
+
+
+@pytest.mark.parametrize("with_fragment", [False, True])
+def test_stream_rejects_response_without_done(with_fragment) -> None:
+    lines = (
+        [b'{"message":{"content":"Partiel"},"done":false}\n'] if with_fragment else []
+    )
+    with patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=FakeStreamingResponse(lines),
+    ):
+        stream = OllamaProvider().stream([])
+        if with_fragment:
+            assert next(stream) == "Partiel"
+        with pytest.raises(RuntimeError, match="réponse Ollama est incomplète"):
+            list(stream)
+
+
+def test_stream_reports_ollama_error_after_fragment() -> None:
+    lines = [
+        b'{"message":{"content":"Partiel"},"done":false}\n',
+        b'{"error":"prediction failed"}\n',
+    ]
+    with patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=FakeStreamingResponse(lines),
+    ):
+        stream = OllamaProvider().stream([])
+        assert next(stream) == "Partiel"
+        with pytest.raises(RuntimeError, match="Erreur Ollama : prediction failed"):
+            list(stream)
+
+
+@pytest.mark.parametrize(
+    "error", [IncompleteRead(b"", 10), ConnectionResetError("connection reset")]
+)
+def test_stream_reports_http_interruption_after_fragment(error) -> None:
+    def interrupted_lines():
+        yield b'{"message":{"content":"Partiel"},"done":false}\n'
+        raise error
+
+    with patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=FakeStreamingResponse(interrupted_lines()),
+    ):
+        stream = OllamaProvider().stream([])
+        assert next(stream) == "Partiel"
+        with pytest.raises(RuntimeError, match="flux Ollama.*interrompu"):
+            list(stream)
 
 
 def test_chat_endpoint_404_has_actionable_error() -> None:
