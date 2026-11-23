@@ -59,7 +59,7 @@ Par exemple :
 ```powershell
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\src" | Out-Null
 Set-Location "$env:USERPROFILE\src"
-git clone --branch phase2-selection-agents https://github.com/bahpita3935-creator/Bah_AI_Assistant.git
+git clone --branch main https://github.com/bahpita3935-creator/Bah_AI_Assistant.git
 cd Bah_AI_Assistant
 ```
 
