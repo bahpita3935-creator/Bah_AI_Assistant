@@ -44,9 +44,10 @@ Streamlit 1.67.0, version utilisée dans l'environnement validé, déclare Pytho
 sous Python 3.11. Le projet ne fixe pas de version Python dans
 `requirements.txt`.
 
-Les dépendances sont déclarées avec des versions minimales dans
-`requirements.txt`, sans fichier de verrouillage. Les versions installées
-peuvent donc varier.
+La V2 a été validée avec Python 3.14.7, Streamlit 1.67.0 et pytest 9.2.0.
+Les versions directes de Streamlit et pytest sont figées dans
+`requirements.txt` pour stabiliser cet environnement de référence ; les
+dépendances transitives ne sont pas toutes verrouillées et peuvent varier.
 
 ## Installation
 
