@@ -51,18 +51,45 @@ dépendances transitives ne sont pas toutes verrouillées et peuvent varier.
 
 ## Installation
 
-Clonez le dépôt et ouvrez son dossier :
+Sous Windows, choisissez un dossier parent court et accessible en écriture.
+Les chemins trop longs peuvent empêcher `pip` d'installer certaines
+dépendances lorsque la prise en charge des chemins longs n'est pas activée.
+Par exemple :
 
 ```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\src" | Out-Null
+Set-Location "$env:USERPROFILE\src"
 git clone --branch phase2-selection-agents https://github.com/bahpita3935-creator/Bah_AI_Assistant.git
 cd Bah_AI_Assistant
 ```
 
-Créez et activez l'environnement virtuel recommandé, puis installez et vérifiez
-les dépendances :
+Si le chemin de votre profil est lui-même long, choisissez un emplacement plus
+court où vous avez le droit d'écrire.
+
+Créez l'environnement virtuel recommandé :
 
 ```powershell
 py -3.14 -m venv .venv
+```
+
+Si `py -3.14` ne trouve pas Python alors que Python 3.14 est installé, listez
+les interpréteurs avec `py --list` et utilisez le sélecteur affiché. Par exemple,
+sur la machine de validation, les commandes suivantes ont fonctionné :
+
+```powershell
+py --list
+py -V:Astral/CPython3.14.7 --version
+py -V:Astral/CPython3.14.7 -m venv .venv
+```
+
+Ce sélecteur dépend de l'installation et peut être différent sur une autre
+machine. Si nécessaire, utilisez le chemin complet de l'interpréteur Python
+3.14 installé, vérifiez sa version avec `--version`, puis lancez cet
+interpréteur avec `-m venv .venv`.
+
+Activez l'environnement, puis installez et vérifiez les dépendances :
+
+```powershell
 .\.venv\Scripts\Activate.ps1
 python --version
 python -m pip install -r requirements.txt
@@ -96,6 +123,10 @@ python -m pytest
 ```
 
 Dernière validation de référence pour la V2 : **59 tests réussis, 0 échec**.
+Un timeout intermittent d'AppTest a été observé pour
+`test_submitted_messages_stay_in_chat_history_container` pendant la validation.
+Il n'a pas été reproduit lors de **15 exécutions ciblées réussies** ; sa cause
+reste inconnue.
 
 ## Lancement
 
