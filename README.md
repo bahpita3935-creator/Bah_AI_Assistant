@@ -30,13 +30,19 @@ fournissent aussi des outils de préparation et des informations statiques ;
 elles ne sont pas des agents autonomes. Les projets présentés sont une liste
 statique et ne disposent pas encore d'une gestion CRUD persistante.
 
-## Prérequis
+## Prérequis Windows
 
-- Windows PowerShell (les exemples ci-dessous sont destinés à Windows).
-- Une installation de Python compatible avec la version de Streamlit installée.
-  Le projet n'impose pas de version Python dans `requirements.txt` ; la commande
-  `py -3` utilise la version Python 3 disponible via le lanceur Windows.
-- Ollama installé et démarré localement pour utiliser les réponses IA.
+- Windows et PowerShell.
+- Git.
+- Python 3.14 avec le lanceur Windows `py`. L'environnement V2 validé utilise
+  Python 3.14.7.
+- Ollama installé et démarré localement pour utiliser les réponses IA. C'est
+  une dépendance externe, pas un package Python.
+
+Streamlit 1.67.0, version utilisée dans l'environnement validé, déclare Python
+3.11 comme minimum. Cela ne signifie pas que toute l'application a été validée
+sous Python 3.11. Le projet ne fixe pas de version Python dans
+`requirements.txt`.
 
 Les dépendances sont déclarées avec des versions minimales dans
 `requirements.txt`, sans fichier de verrouillage. Les versions installées
@@ -44,47 +50,71 @@ peuvent donc varier.
 
 ## Installation
 
-Depuis la racine du dépôt :
+Clonez le dépôt et ouvrez son dossier :
 
 ```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+git clone --branch phase2-selection-agents https://github.com/bahpita3935-creator/Bah_AI_Assistant.git
+cd Bah_AI_Assistant
 ```
 
-Si `py -3` ne désigne pas une version compatible de Python, créez l'environnement
-avec l'interpréteur Python installé et compatible sur votre machine.
+Créez et activez l'environnement virtuel recommandé, puis installez et vérifiez
+les dépendances :
+
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python --version
+python -m pip install -r requirements.txt
+python -m pip check
+```
+
+Le dossier `.venv` est propre à la machine et ne doit jamais être versionné.
+L'activation est recommandée ; si PowerShell la bloque, utilisez directement
+`.\.venv\Scripts\python.exe` à la place de `python` dans les commandes
+ci-dessous et pour l'installation ci-dessus.
 
 ## Ollama
 
-Installez et démarrez Ollama, puis récupérez le modèle par défaut :
+Installez et démarrez Ollama séparément, puis vérifiez-le et téléchargez Phi3,
+le modèle par défaut :
 
 ```powershell
+ollama --version
 ollama pull phi3
+ollama list
 ```
 
 L'application utilise l'API Ollama locale à
 `http://127.0.0.1:11434`. Un autre modèle peut être sélectionné dans les
 préférences, s'il est installé dans Ollama.
 
+## Tests
+
+```powershell
+python -m pytest
+```
+
+Dernière validation de référence pour la V2 : **59 tests réussis, 0 échec**.
+
 ## Lancement
 
 Depuis la racine du dépôt :
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501
+python -m streamlit run app.py
 ```
 
-Le port `8501` est une recommandation (port Streamlit habituel), pas une
-contrainte de l'application. Si le port est occupé, choisissez-en un autre en
-changeant `--server.port`; ouvrez ensuite l'adresse locale affichée par
-Streamlit.
+Ouvrez l'adresse locale affichée par Streamlit. Le port `8501` est le port
+habituel, pas une contrainte de l'application. Pour utiliser explicitement
+une adresse locale et un autre port, ajoutez par exemple
+`--server.address=127.0.0.1 --server.port=8502`.
 
 ## Données locales et limites
 
-Au premier lancement, l'application crée `data/conversations.json` et
-`data/memory.json`. Ces fichiers contiennent l'historique, les faits de mémoire
-et les préférences ; ce sont des données locales générées par l'application,
+Au premier lancement, `data/conversations.json` et `data/memory.json` peuvent
+être absents : l'application les crée lorsqu'ils sont nécessaires. Ces fichiers
+contiennent l'historique, les faits de mémoire et les préférences ; ce sont des
+données locales générées par l'application,
 ignorées par Git et non destinées à être versionnées. Les fichiers de
 verrouillage et temporaires JSON ciblés sont également exclus. La V2 ne fournit
 pas de sauvegarde ou de restauration automatique.
@@ -105,14 +135,6 @@ Limites connues de la V2 :
 - Les brouillons de réseaux sociaux ne sont pas publiés automatiquement.
 - Une suppression confirmée est définitive ; aucune restauration intégrée n'est
   disponible.
-
-## Tests
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-Dernière validation de référence pour la V2 : **59 tests réussis, 0 échec**.
 
 ## Documentation
 
