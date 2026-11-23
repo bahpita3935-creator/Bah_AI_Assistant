@@ -22,3 +22,5 @@ __pycache__/
 data/conversations.json
 data/memory.json
 data/*.json.lock
+/data/.conversations.json.*.tmp
+/data/.memory.json.*.tmp

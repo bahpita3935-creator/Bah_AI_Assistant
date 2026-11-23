@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import shutil
@@ -147,6 +148,8 @@ class OllamaProvider:
                 "model": model,
                 "messages": messages,
                 "stream": True,
+                "keep_alive": "10m",
+                "options": {"num_predict": 256, "temperature": 0.7},
             }
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -156,15 +159,23 @@ class OllamaProvider:
             method="POST",
         )
 
+        completed = False
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 for raw_line in response:
                     data = json.loads(raw_line.decode("utf-8"))
                     if error := data.get("error"):
                         raise RuntimeError(f"Erreur Ollama : {error}")
+                    completed = data.get("done") is True
                     if message := data.get("message"):
                         if text := message.get("content"):
                             yield text
+                    if completed:
+                        break
+                if not completed:
+                    raise RuntimeError(
+                        "La réponse Ollama est incomplète : flux terminé sans done=true."
+                    )
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             try:
@@ -174,3 +185,5 @@ class OllamaProvider:
             raise RuntimeError(
                 f"Erreur API Ollama HTTP {exc.code} sur /api/chat : {error}"
             ) from exc
+        except (http.client.HTTPException, OSError) as exc:
+            raise RuntimeError(f"Le flux Ollama a été interrompu : {exc}") from exc

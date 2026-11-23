@@ -1,6 +1,7 @@
 """Tests for assistant features and UI helpers."""
 
 from concurrent.futures import ThreadPoolExecutor
+from http.client import IncompleteRead
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +10,9 @@ from unittest.mock import patch
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from agents.registry import AGENTS
 from modules import assistant
+from modules.ai_provider import OllamaProvider
 from modules.models import Conversation
 from modules.assistant import conversation_title
 from modules.business import build_business_brief
@@ -290,7 +293,7 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
     ):
         app = AppTest.from_string(script).run()
         app.text_area(key="assistant_user_message").set_value("Question de test")
-        app.form_submit_button(key="send_assistant_message").click().run()
+        app.form_submit_button(key="send_assistant_message").click().run(timeout=15)
 
     assert not app.exception
     assert len(app.container(key="assistant_chat_history").chat_message) == 2
@@ -299,6 +302,584 @@ def test_submitted_messages_stay_in_chat_history_container(tmp_path) -> None:
         ("user", "Question de test"),
         ("assistant", "Réponse de test"),
     ]
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "ollama_error", "http_interruption"])
+def test_interrupted_stream_preserves_history_without_partial_answer(
+    tmp_path, failure
+) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    conversation = conversation_store.create("Historique")
+    conversation.add_message("user", "Question précédente")
+    conversation.add_message("assistant", "Réponse précédente")
+    conversation_store.save(conversation)
+
+    class FakeProvider(OllamaProvider):
+        def ensure_running(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+    class InterruptedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def __iter__(self):
+            yield b'{"message":{"content":"Texte partiel"},"done":false}\n'
+            if failure == "ollama_error":
+                yield b'{"error":"generation interrompue"}\n'
+            elif failure == "http_interruption":
+                raise IncompleteRead(b"", 10)
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ), patch(
+        "modules.ai_provider.urllib.request.urlopen",
+        return_value=InterruptedResponse(),
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.text_area(key="assistant_user_message").set_value("Nouvelle question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert app.error
+    expected_error = {
+        "incomplete": "réponse Ollama est incomplète",
+        "ollama_error": "generation interrompue",
+        "http_interruption": "flux Ollama a été interrompu",
+    }[failure]
+    assert expected_error in app.error[0].value
+    restored = conversation_store.get(conversation.id)
+    assert restored is not None
+    messages = [(message.role, message.content) for message in restored.messages]
+    assert messages[:3] == [
+        ("user", "Question précédente"),
+        ("assistant", "Réponse précédente"),
+        ("user", "Nouvelle question"),
+    ]
+    assert len(messages) == 4
+    assert messages[3][0] == "assistant"
+    assert messages[3][1] == app.error[0].value
+    assert all("Texte partiel" not in content for _, content in messages)
+
+
+@pytest.fixture
+def deletion_app(tmp_path, request):
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    for index in range(getattr(request, "param", 3)):
+        conversation = conversation_store.create("Même titre")
+        conversation.add_message("user", f"Message {index}")
+        conversation_store.save(conversation)
+
+    class FakeProvider:
+        def ensure_running(self):
+            return False
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        yield app, conversation_store
+
+
+def test_delete_request_and_cancel_preserve_conversations(deletion_app) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] == target_id
+    assert any(target_id in warning.value for warning in app.warning)
+
+    next(button for button in app.button if button.label == "Annuler").click().run()
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+
+
+def test_confirm_deletes_only_target_with_duplicate_titles(deletion_app) -> None:
+    app, store = deletion_app
+    conversations = store.list()
+    target_id = conversations[1].id
+    app.selectbox(key="selected_conversation_id").select(target_id).run()
+    remaining = [item.to_dict() for item in conversations if item.id != target_id]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    assert store.get(target_id) is None
+    assert [item.to_dict() for item in store.list()] == remaining
+    assert app.session_state["assistant_conversation_id"] == remaining[0]["id"]
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0]["id"]
+    assert app.session_state["pending_delete_conversation_id"] is None
+    app.run()
+    assert not app.exception
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0]["id"]
+
+
+def test_changing_selection_cancels_pending_deletion(deletion_app) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+    other_id = next(item.id for item in store.list() if item.id != target_id)
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    app.selectbox(key="selected_conversation_id").select(other_id).run()
+    assert not app.exception
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+    app.selectbox(key="selected_conversation_id").select(target_id).run()
+    assert store.path.read_bytes() == original
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+
+
+@pytest.mark.parametrize(
+    "changed_state", ["assistant_conversation_id", "selected_conversation_id"]
+)
+def test_confirm_rejects_changed_active_or_selection(deletion_app, changed_state) -> None:
+    app, store = deletion_app
+    original = store.path.read_bytes()
+    target_id = app.session_state["assistant_conversation_id"]
+    other_id = next(item.id for item in store.list() if item.id != target_id)
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    app.session_state[changed_state] = other_id
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    assert store.path.read_bytes() == original
+    assert app.session_state["pending_delete_conversation_id"] is None
+
+
+def test_new_conversation_cancels_pending_deletion(deletion_app) -> None:
+    app, store = deletion_app
+    original = [item.to_dict() for item in store.list()]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Nouvelle conversation"
+    ).click().run()
+
+    assert not app.exception
+    assert app.session_state["pending_delete_conversation_id"] is None
+    assert not any(button.label == "Confirmer la suppression" for button in app.button)
+    for conversation in original:
+        restored = store.get(conversation["id"])
+        assert restored is not None
+        assert restored.to_dict() == conversation
+
+
+@pytest.mark.parametrize("deletion_app", [1], indirect=True)
+def test_confirm_deleting_last_conversation_creates_empty_one(deletion_app) -> None:
+    app, store = deletion_app
+    target_id = app.session_state["assistant_conversation_id"]
+
+    next(
+        button for button in app.button if button.label == "Supprimer la conversation"
+    ).click().run()
+    next(
+        button for button in app.button if button.label == "Confirmer la suppression"
+    ).click().run()
+
+    assert not app.exception
+    remaining = store.list()
+    assert len(remaining) == 1
+    assert remaining[0].id != target_id
+    assert remaining[0].messages == []
+    assert app.session_state["assistant_conversation_id"] == remaining[0].id
+    assert app.selectbox(key="selected_conversation_id").value == remaining[0].id
+
+
+@pytest.mark.parametrize("agent_id", ["general", "business"])
+def test_new_conversation_isolated_with_duplicate_titles(tmp_path, agent_id) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    preferences_store.save({"context_messages": 5})
+    memory_store.add("Ancien contexte marketing mémorisé")
+    memory_before = (tmp_path / "memory.json").read_bytes()
+    old_conversations = []
+    for content in ("Ancienne campagne marketing", "Ancien produit marketing"):
+        conversation = conversation_store.create()
+        conversation.add_message("user", content)
+        conversation_store.save(conversation)
+        old_conversations.append(conversation)
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append(messages)
+            yield "Nouvelle réponse"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.selectbox(key="selected_conversation_id").select(
+            old_conversations[0].id
+        ).run()
+        assert app.session_state["assistant_conversation_id"] == old_conversations[0].id
+        app.selectbox(key="selected_conversation_id").select(
+            old_conversations[1].id
+        ).run()
+        assert app.session_state["assistant_conversation_id"] == old_conversations[1].id
+
+        next(
+            button for button in app.button if button.label == "Nouvelle conversation"
+        ).click().run()
+        new_id = app.session_state["assistant_conversation_id"]
+        assert new_id not in {conversation.id for conversation in old_conversations}
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        new_conversation = conversation_store.get(new_id)
+        assert new_conversation is not None
+        assert not new_conversation.messages
+
+        app.run()
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        app.selectbox(key="assistant_agent_id").select(agent_id).run()
+        app.text_area(key="assistant_user_message").set_value("Question nouvelle")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+        assert not app.exception
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+        app.run()
+        assert not app.exception
+        assert app.session_state["assistant_conversation_id"] == new_id
+        assert app.selectbox(key="selected_conversation_id").value == new_id
+
+    assert len(calls) == 1
+    assert [message["role"] for message in calls[0]] == ["system", "user"]
+    assert calls[0][1]["content"] == "Question nouvelle"
+    assert all("marketing" not in message["content"].lower() for message in calls[0])
+    for old in old_conversations:
+        restored = conversation_store.get(old.id)
+        assert restored is not None
+        assert restored.to_dict() == old.to_dict()
+    new_conversation = conversation_store.get(new_id)
+    assert new_conversation is not None
+    assert [(message.role, message.content) for message in new_conversation.messages] == [
+        ("user", "Question nouvelle"),
+        ("assistant", "Nouvelle réponse"),
+    ]
+    assert (tmp_path / "memory.json").read_bytes() == memory_before
+    assert memory_store.list() == ["Ancien contexte marketing mémorisé"]
+
+
+@pytest.mark.parametrize("agent", AGENTS, ids=lambda agent: agent.id)
+def test_agent_selection_streams_and_preserves_v1_data(tmp_path, agent) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    preferences_store.save(
+        {"language": "Français", "response_tone": "Technique", "context_messages": 2}
+    )
+    memory_store.add("Préférence de test")
+    memory_before = (tmp_path / "memory.json").read_bytes()
+    conversation = conversation_store.create("Conversation V1")
+    conversation.add_message("user", "Ancienne question")
+    conversation.add_message("assistant", "Ancienne réponse")
+    conversation_store.save(conversation)
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append((messages, model))
+            yield "Réponse "
+            yield "spécialisée"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        assert app.selectbox(key="assistant_agent_id").value == "general"
+        app.selectbox(key="assistant_agent_id").select(agent.id).run()
+        app.text_input(key="ollama_model").set_value("modele-test")
+        app.text_area(key="assistant_user_message").set_value("Nouvelle question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+        assert not app.exception
+        assert app.selectbox(key="assistant_agent_id").value == agent.id
+
+        restored_app = AppTest.from_string(script).run()
+        assert not restored_app.exception
+        assert restored_app.selectbox(key="assistant_agent_id").value == "general"
+        assert len(restored_app.container(key="assistant_chat_history").chat_message) == 4
+
+    assert len(calls) == 1
+    messages, model = calls[0]
+    assert model == "modele-test"
+    assert "BAH AI ASSISTANT" in messages[0]["content"]
+    assert "modele-test" in messages[0]["content"]
+    assert "via Ollama" in messages[0]["content"]
+    assert agent.instructions in messages[0]["content"]
+    assert "Préférence de test" not in messages[0]["content"]
+    assert "Ton : Technique" in messages[0]["content"]
+    assert messages[1:] == [
+        {"role": "assistant", "content": "Ancienne réponse"},
+        {"role": "user", "content": "Nouvelle question"},
+    ]
+    restored = JsonConversationStore(tmp_path / "conversations.json").get(
+        conversation.id
+    )
+    assert restored is not None
+    assert [(message.role, message.content) for message in restored.messages] == [
+        ("user", "Ancienne question"),
+        ("assistant", "Ancienne réponse"),
+        ("user", "Nouvelle question"),
+        ("assistant", "Réponse spécialisée"),
+    ]
+    assert (tmp_path / "memory.json").read_bytes() == memory_before
+
+
+@pytest.mark.parametrize(
+    ("model", "question"),
+    [
+        ("phi3", "Qui es-tu ?"),
+        ("autre-modele", "Quel modèle utilises-tu ?"),
+    ],
+)
+def test_general_assistant_excludes_saved_memory_from_system_message(
+    tmp_path, model, question
+) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    memory_store.add("Préférence V1")
+    calls = []
+
+    class FakeProvider:
+        def ensure_running(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append((messages, model))
+            yield "Réponse V1"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.text_input(key="ollama_model").set_value(model)
+        app.text_area(key="assistant_user_message").set_value(question)
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert len(calls) == 1
+    messages, selected_model = calls[0]
+    assert selected_model == model
+    assert "BAH AI ASSISTANT" in messages[0]["content"]
+    assert model in messages[0]["content"]
+    assert "via Ollama" in messages[0]["content"]
+    assert (
+        f"J'utilise le modèle {model}, exécuté localement via Ollama"
+        in messages[0]["content"]
+    )
+    assert "Langue : Français. Ton : Professionnel." in messages[0]["content"]
+    assert "Préférence V1" not in messages[0]["content"]
+    assert messages[1:] == [{"role": "user", "content": question}]
+    assert memory_store.list() == ["Préférence V1"]
+
+
+def test_saving_context_preferences_updates_model_without_widget_error(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    conversation_store.create()
+
+    class FakeProvider:
+        def ensure_running(self):
+            return False
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script, default_timeout=15).run()
+        app.slider(key="pref_context_messages").set_value(5)
+        app.text_input(key="pref_ollama_model").set_value("test-model")
+        assert preferences_store.load()["context_messages"] == 20
+        app.form_submit_button[0].click().run()
+
+        assert not app.exception
+        assert preferences_store.load()["context_messages"] == 5
+        assert app.text_input(key="ollama_model").value == "test-model"
+        assert app.slider(key="pref_context_messages").value == 5
+        assert app.success
+
+        with patch.object(
+            preferences_store, "save", side_effect=JsonStorageError("test")
+        ):
+            app.slider(key="pref_context_messages").set_value(7)
+            app.form_submit_button[0].click().run()
+        assert not app.exception
+        assert preferences_store.load()["context_messages"] == 5
+        assert app.text_input(key="ollama_model").value == "test-model"
+        assert any("Erreur de stockage local" in error.value for error in app.error)
+        assert not app.success
+
+
+def test_switching_agents_reuses_conversation_context(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+    calls = []
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return True
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            calls.append(messages)
+            yield "Réponse de test"
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.selectbox(key="assistant_agent_id").select("programmation").run()
+        app.text_area(key="assistant_user_message").set_value("Question technique")
+        app.form_submit_button(key="send_assistant_message").click().run()
+        app.selectbox(key="assistant_agent_id").select("business").run()
+        app.text_area(key="assistant_user_message").set_value("Question business")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert len(calls) == 2
+    assert "agent Programmation" in calls[0][0]["content"]
+    assert "agent Business" in calls[1][0]["content"]
+    assert calls[1][1:] == [
+        {"role": "user", "content": "Question technique"},
+        {"role": "assistant", "content": "Réponse de test"},
+        {"role": "user", "content": "Question business"},
+    ]
+
+
+def test_agent_reports_provider_failure(tmp_path) -> None:
+    conversation_store = JsonConversationStore(tmp_path / "conversations.json")
+    memory_store = JsonMemoryStore(tmp_path / "memory.json")
+    preferences_store = JsonPreferencesStore(tmp_path / "memory.json")
+
+    class FakeProvider:
+        name = "test"
+
+        def ensure_running(self):
+            return True
+
+        def is_available(self):
+            return False
+
+        def list_models(self):
+            return ["phi3:latest"]
+
+        def model_is_available(self, model):
+            return True
+
+        def stream(self, messages, model="phi3"):
+            raise AssertionError("Un fournisseur indisponible ne doit pas être appelé.")
+
+    stores = (conversation_store, memory_store, preferences_store)
+    script = "from modules.assistant import render_assistant\nrender_assistant()"
+    with patch("modules.assistant.get_stores", return_value=stores), patch(
+        "modules.assistant.OllamaProvider", FakeProvider
+    ):
+        app = AppTest.from_string(script).run()
+        app.selectbox(key="assistant_agent_id").select("business").run()
+        app.text_area(key="assistant_user_message").set_value("Question")
+        app.form_submit_button(key="send_assistant_message").click().run()
+
+    assert not app.exception
+    assert any("indisponible" in error.value for error in app.error)
+    messages = conversation_store.list()[0].messages
+    assert messages[0].content == "Question"
+    assert "indisponible" in messages[1].content
 
 
 def test_conversation_title() -> None:

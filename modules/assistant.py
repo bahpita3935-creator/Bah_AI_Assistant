@@ -8,6 +8,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from agents.registry import AGENTS, get_agent
+from agents.service import identity_instruction, stream_response
 from modules.ai_provider import OllamaProvider
 from modules.storage import (
     JsonConversationStore,
@@ -47,15 +49,37 @@ def conversation_title(prompt: str) -> str:
 def start_new_conversation() -> None:
     conversation_store, _, _ = get_stores()
     conversation = conversation_store.create()
+    cancel_conversation_deletion()
     st.session_state.assistant_conversation_id = conversation.id
     st.session_state.selected_conversation_id = conversation.id
 
 
+def request_conversation_deletion() -> None:
+    st.session_state.pending_delete_conversation_id = (
+        st.session_state.assistant_conversation_id
+    )
+
+
+def cancel_conversation_deletion() -> None:
+    st.session_state.pending_delete_conversation_id = None
+
+
 def delete_active_conversation() -> None:
+    target_id = st.session_state.get("pending_delete_conversation_id")
+    if (
+        target_id is None
+        or target_id != st.session_state.get("assistant_conversation_id")
+        or target_id != st.session_state.get("selected_conversation_id")
+    ):
+        cancel_conversation_deletion()
+        return
+
     conversation_store, _, _ = get_stores()
-    conversation_store.delete(st.session_state.assistant_conversation_id)
+    if not conversation_store.delete(target_id):
+        raise JsonStorageError("La conversation à supprimer est introuvable.")
     remaining = conversation_store.list()
     replacement = remaining[0] if remaining else conversation_store.create()
+    cancel_conversation_deletion()
     st.session_state.assistant_conversation_id = replacement.id
     st.session_state.selected_conversation_id = replacement.id
 
@@ -63,6 +87,26 @@ def delete_active_conversation() -> None:
 def delete_memory_fact(fact: str) -> None:
     _, memory_store, _ = get_stores()
     memory_store.remove(fact)
+
+
+def save_assistant_preferences() -> None:
+    try:
+        _, _, preferences_store = get_stores()
+        saved = preferences_store.save(
+            {
+                "display_name": st.session_state.pref_display_name,
+                "language": st.session_state.pref_language,
+                "response_tone": st.session_state.pref_response_tone,
+                "ollama_model": st.session_state.pref_ollama_model,
+                "context_messages": st.session_state.pref_context_messages,
+            }
+        )
+    except JsonStorageError as exc:
+        st.session_state.assistant_preferences_error = str(exc)
+        return
+    st.session_state.user_preferences = saved
+    st.session_state.ollama_model = saved["ollama_model"]
+    st.session_state.assistant_preferences_error = None
 
 
 def render_assistant() -> None:
@@ -74,6 +118,19 @@ def render_assistant() -> None:
 
 def _render_assistant() -> None:
     st.header("Assistant")
+    agent_id = st.selectbox(
+        "Agent actif",
+        ("general", *(agent.id for agent in AGENTS)),
+        format_func=lambda value: (
+            "Assistant Général" if value == "general" else get_agent(value).name
+        ),
+        key="assistant_agent_id",
+        help=(
+            "Le contexte de la conversation est partagé entre les agents. "
+            "Le choix de l'agent n'est pas enregistré dans l'historique."
+        ),
+    )
+    st.caption("Les agents partagent l'historique de la conversation active.")
     conversation_store, memory_store, preferences_store = get_stores()
     provider = OllamaProvider()
     ollama_available = provider.ensure_running()
@@ -92,6 +149,13 @@ def _render_assistant() -> None:
         active = conversations[0] if conversations else conversation_store.create()
         st.session_state.assistant_conversation_id = active.id
 
+    pending_id = st.session_state.get("pending_delete_conversation_id")
+    if pending_id is not None and (
+        pending_id != st.session_state.assistant_conversation_id
+        or pending_id != st.session_state.get("selected_conversation_id")
+    ):
+        cancel_conversation_deletion()
+
     conversations = conversation_store.list()
     if conversations:
         selected_id = st.selectbox(
@@ -105,15 +169,19 @@ def _render_assistant() -> None:
                 ),
                 0,
             ),
-            format_func=lambda conversation_id: next(
-                (
-                    item.title
-                    for item in conversations
-                    if item.id == conversation_id
-                ),
-                "Conversation",
+            format_func=lambda conversation_id: (
+                next(
+                    (
+                        item.title
+                        for item in conversations
+                        if item.id == conversation_id
+                    ),
+                    "Conversation",
+                )
+                + f" [{conversation_id}]"
             ),
             key="selected_conversation_id",
+            on_change=cancel_conversation_deletion,
             help="Reprendre une conversation enregistrée localement.",
         )
         st.session_state.assistant_conversation_id = selected_id
@@ -124,6 +192,7 @@ def _render_assistant() -> None:
     if conversation is None:
         conversation = conversation_store.create()
         st.session_state.assistant_conversation_id = conversation.id
+        cancel_conversation_deletion()
 
     left, right = st.columns([3, 1])
     with left:
@@ -157,18 +226,18 @@ def _render_assistant() -> None:
 
     with st.expander("Préférences utilisateur"):
         with st.form("assistant_preferences_form"):
-            display_name = st.text_input(
+            st.text_input(
                 "Nom affiché",
                 value=preferences["display_name"],
                 key="pref_display_name",
             )
-            language = st.selectbox(
+            st.selectbox(
                 "Langue",
                 ("Français", "English"),
                 index=0 if preferences["language"] == "Français" else 1,
                 key="pref_language",
             )
-            response_tone = st.selectbox(
+            st.selectbox(
                 "Ton des réponses",
                 ("Professionnel", "Simple", "Technique"),
                 index=("Professionnel", "Simple", "Technique").index(
@@ -176,12 +245,12 @@ def _render_assistant() -> None:
                 ),
                 key="pref_response_tone",
             )
-            preference_model = st.text_input(
+            st.text_input(
                 "Modèle Ollama préféré",
                 value=preferences["ollama_model"],
                 key="pref_ollama_model",
             )
-            context_messages = st.slider(
+            st.slider(
                 "Messages récents envoyés au modèle",
                 min_value=1,
                 max_value=100,
@@ -192,21 +261,17 @@ def _render_assistant() -> None:
                 "Sauvegarder les préférences",
                 icon=":material/save:",
                 width="stretch",
+                on_click=save_assistant_preferences,
             )
 
         if save_preferences:
-            saved_preferences = preferences_store.save(
-                {
-                    "display_name": display_name,
-                    "language": language,
-                    "response_tone": response_tone,
-                    "ollama_model": preference_model,
-                    "context_messages": context_messages,
-                }
-            )
-            st.session_state.user_preferences = saved_preferences
-            st.session_state.ollama_model = saved_preferences["ollama_model"]
-            st.success("Préférences sauvegardées.")
+            if st.session_state.assistant_preferences_error:
+                st.error(
+                    "Erreur de stockage local : "
+                    + st.session_state.assistant_preferences_error
+                )
+            else:
+                st.success("Préférences sauvegardées.")
 
     toolbar_left, toolbar_right = st.columns([1, 1])
     with toolbar_left:
@@ -221,8 +286,19 @@ def _render_assistant() -> None:
             "Supprimer la conversation",
             icon=":material/delete:",
             width="stretch",
-            on_click=delete_active_conversation,
+            on_click=request_conversation_deletion,
         )
+
+    if st.session_state.get("pending_delete_conversation_id") == conversation.id:
+        st.warning(
+            f"Supprimer définitivement la conversation « {conversation.title} » "
+            f"[{conversation.id}] ? Cette action est irréversible."
+        )
+        confirm, cancel = st.columns(2)
+        with confirm:
+            st.button("Confirmer la suppression", on_click=delete_active_conversation)
+        with cancel:
+            st.button("Annuler", on_click=cancel_conversation_deletion)
 
     chat_history = st.container(key="assistant_chat_history")
     with chat_history:
@@ -272,40 +348,39 @@ def _render_assistant() -> None:
                         conversation_store.save(conversation)
                         st.stop()
 
-                    facts = memory_store.list()
-                    messages = []
-                    if facts:
-                        messages.append(
-                            {
-                                "role": "system",
-                                "content": "Mémoire locale de l'utilisateur : "
-                                + " ".join(facts)
-                                + f". Langue : {preferences['language']}."
-                                + f" Ton : {preferences['response_tone']}.",
-                            }
-                        )
-                    else:
-                        messages.append(
+                    if agent_id == "general":
+                        messages = [
                             {
                                 "role": "system",
                                 "content": (
+                                    f"{identity_instruction(model)} "
                                     f"Langue : {preferences['language']}."
                                     f" Ton : {preferences['response_tone']}."
                                 ),
                             }
-                        )
-                    messages.extend(
-                        {
-                            "role": message.role,
-                            "content": message.content,
-                        }
-                        for message in conversation.messages[
-                            -int(preferences["context_messages"]):
                         ]
-                    )
-                    response = st.write_stream(
-                        provider.stream(messages, model=model)
-                    )
+                        messages.extend(
+                            {
+                                "role": message.role,
+                                "content": message.content,
+                            }
+                            for message in conversation.messages[
+                                -int(preferences["context_messages"]):
+                            ]
+                        )
+                        stream = provider.stream(messages, model=model)
+                    else:
+                        stream = stream_response(
+                            provider,
+                            agent_id,
+                            conversation.messages,
+                            facts=(),
+                            language=preferences["language"],
+                            response_tone=preferences["response_tone"],
+                            context_messages=int(preferences["context_messages"]),
+                            model=model,
+                        )
+                    response = st.write_stream(stream)
                     conversation.add_message("assistant", response)
                     conversation_store.save(conversation)
                 except (
@@ -313,6 +388,7 @@ def _render_assistant() -> None:
                     TimeoutError,
                     json.JSONDecodeError,
                     RuntimeError,
+                    ValueError,
                 ) as exc:
                     response = f"Impossible de contacter Ollama : {exc}"
                     st.error(response)
