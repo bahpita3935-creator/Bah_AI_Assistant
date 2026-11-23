@@ -1,48 +1,110 @@
-# BAH AI Assistant
+# BAH AI ASSISTANT V2
 
-Assistant IA personnel pour BAH TECH GROUP, développé avec Python et Streamlit.
+BAH AI ASSISTANT est une application locale de conversation et d'assistance,
+construite avec Python, Streamlit et Ollama. Le modèle Ollama par défaut est
+`phi3` ; le modèle peut être changé dans les préférences et doit être installé
+localement.
 
-## Modules
+## Fonctionnalités V2
 
-- **Assistant** : interface conversationnelle avec préparation pour Ollama.
-- **Programmation** : création de consignes techniques.
-- **Business** : synthèse de projet et proposition de valeur.
-- **Réseaux sociaux** : brouillons de publications par plateforme.
-- **Projets BAH TECH** : portefeuille des projets du groupe.
+- **Assistant Général** et agents de conversation **Programmation**,
+  **Affaires**, **Réseaux sociaux** et **BAH TECH**. Dans l'interface actuelle,
+  l'agent Affaires porte le libellé « Business ».
+- Identité commune BAH AI ASSISTANT et consignes spécialisées pour les agents.
+- Conversations persistées localement en JSON et sélectionnées par identifiant,
+  ce qui isole les historiques même si des conversations ont le même titre.
+- Confirmation explicite avant de supprimer une conversation.
+- Réponses Ollama en streaming. Le flux est rejeté s'il se termine sans
+  `done=true`; un `done_reason` tel que `stop` ou `length` n'invalide pas à lui
+  seul la fin du flux.
+- Paramètres de génération actuels : `num_predict=256`, `temperature=0.7` et
+  `keep_alive="10m"`.
+- Mémoire et préférences conservées dans un fichier JSON local. Les faits libres
+  de mémoire ne sont pas injectés automatiquement dans les prompts ; les
+  préférences générales utiles peuvent l'être.
+- Les fichiers JSON temporaires d'écriture sont ciblés par les règles Git
+  d'exclusion.
 
-## Agents de l'assistant
+Les pages Programmation, Business, Réseaux sociaux et Projets BAH TECH
+fournissent aussi des outils de préparation et des informations statiques ;
+elles ne sont pas des agents autonomes. Les projets présentés sont une liste
+statique et ne disposent pas encore d'une gestion CRUD persistante.
 
-L'Assistant démarre en mode **Assistant Général**. Le sélecteur « Agent actif »
-permet de choisir Programmation, Business, Réseaux sociaux ou BAH TECH GROUP.
-Chaque agent est invité à se présenter comme BAH AI ASSISTANT et à indiquer,
-sur demande, le modèle local sélectionné via Ollama.
-Les agents utilisent le modèle Ollama sélectionné et les messages récents de la
-conversation, y compris lors d'un changement d'agent. Les faits de la mémoire
-locale restent enregistrés mais ne sont pas automatiquement envoyés au modèle.
-Le choix ne s'enregistre pas dans l'historique : il revient à Assistant Général
-dans une nouvelle session. Les agents ne publient ni n'exécutent d'actions.
+## Prérequis
+
+- Windows PowerShell (les exemples ci-dessous sont destinés à Windows).
+- Une installation de Python compatible avec la version de Streamlit installée.
+  Le projet n'impose pas de version Python dans `requirements.txt` ; la commande
+  `py -3` utilise la version Python 3 disponible via le lanceur Windows.
+- Ollama installé et démarré localement pour utiliser les réponses IA.
+
+Les dépendances sont déclarées avec des versions minimales dans
+`requirements.txt`, sans fichier de verrouillage. Les versions installées
+peuvent donc varier.
 
 ## Installation
 
+Depuis la racine du dépôt :
+
 ```powershell
-py -3.14 -m venv .venv
-.venv\Scripts\Activate.ps1
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Lancement officiel (Windows PowerShell)
+Si `py -3` ne désigne pas une version compatible de Python, créez l'environnement
+avec l'interpréteur Python installé et compatible sur votre machine.
 
-L'application doit être lancée depuis la racine du projet avec son interpréteur
-`.venv`, sur le port `8501` uniquement :
+## Ollama
+
+Installez et démarrez Ollama, puis récupérez le modèle par défaut :
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true
+ollama pull phi3
 ```
 
-URL officielle : [http://127.0.0.1:8501](http://127.0.0.1:8501).
-Si le port est déjà utilisé, arrêtez l'instance existante au lieu de choisir un
-autre port ou un autre interpréteur.
+L'application utilise l'API Ollama locale à
+`http://127.0.0.1:11434`. Un autre modèle peut être sélectionné dans les
+préférences, s'il est installé dans Ollama.
+
+## Lancement
+
+Depuis la racine du dépôt :
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501
+```
+
+Le port `8501` est une recommandation (port Streamlit habituel), pas une
+contrainte de l'application. Si le port est occupé, choisissez-en un autre en
+changeant `--server.port`; ouvrez ensuite l'adresse locale affichée par
+Streamlit.
+
+## Données locales et limites
+
+Au premier lancement, l'application crée `data/conversations.json` et
+`data/memory.json`. Ces fichiers contiennent l'historique, les faits de mémoire
+et les préférences ; ce sont des données locales générées par l'application,
+ignorées par Git et non destinées à être versionnées. Les fichiers de
+verrouillage et temporaires JSON ciblés sont également exclus. La V2 ne fournit
+pas de sauvegarde ou de restauration automatique.
+
+Les données sont stockées sur la machine. Ollama est appelé localement ; ne
+considérez toutefois pas le stockage local comme une sauvegarde ou une
+protection contre l'accès à votre compte ou appareil.
+
+Limites connues de la V2 :
+
+- Phi3 peut occasionnellement ne pas suivre parfaitement une consigne ; une
+  instruction système ne garantit pas une réponse déterminée.
+- BAH TECH s'appuie sur une liste statique de projets et les informations
+  fournies dans la conversation ; il n'y a pas de RAG ni de recherche dans des
+  documents de projet.
+- Les agents ne sont pas autonomes et n'exécutent pas de commandes.
+- Aucune authentification multi-utilisateur n'est fournie.
+- Les brouillons de réseaux sociaux ne sont pas publiés automatiquement.
+- Une suppression confirmée est définitive ; aucune restauration intégrée n'est
+  disponible.
 
 ## Tests
 
@@ -50,42 +112,41 @@ autre port ou un autre interpréteur.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## IA locale
+Dernière validation de référence pour la V2 : **59 tests réussis, 0 échec**.
 
-L'intégration Ollama utilise l'API locale `http://localhost:11434`.
-Installez Ollama puis un modèle, par exemple :
+## Documentation
 
-```powershell
-ollama pull llama3.2
-```
+- [Feuille de route et périmètre V2/V3](docs/ROADMAP.md)
+- [Détail des objectifs V3](docs/ROADMAP_V3.md)
+- [Backlog V3](docs/V3_BACKLOG.md)
 
-La feuille de route complète est disponible dans
-[docs/ROADMAP.md](docs/ROADMAP.md).
-
-Pour la prochaine architecture majeure, consulter :
-
-- [Feuille de route V3](docs/ROADMAP_V3.md)
-- [Backlog d'exécution V3](docs/V3_BACKLOG.md)
-
-## Architecture
+## Structure du projet
 
 ```text
-app.py                  Point d'entrée Streamlit et navigation
+app.py                       Entrée Streamlit et navigation
+agents/
+  registry.py                Définition des agents spécialisés
+  service.py                 Construction du contexte et consigne d'identité
 modules/
-  models.py             Modèles métier Conversation et Message
-  storage.py            Persistance locale JSON
-  ai_provider.py        Contrat et implémentation Ollama
-  assistant.py          Interface conversationnelle
-  programmation.py      Module d'aide à la programmation
-  business.py           Module business
-  social_media.py       Module réseaux sociaux
-  projets.py            Module portefeuille de projets
+  ai_provider.py             Fournisseur Ollama et streaming
+  assistant.py               Interface conversationnelle et historique
+  models.py                  Modèles Conversation et Message
+  storage.py                 Stockage local JSON
+  business.py                Outil de préparation Affaires (Business)
+  programmation.py           Outil de préparation technique
+  social_media.py            Génération de brouillons de publication
+  projets.py                 Présentation statique des projets
+.streamlit/
+  config.toml                Thème Streamlit
 data/
-  conversations.json    Historique des conversations
-  memory.json           Mémoire locale utilisateur
+  README.md                  Notice sur les données locales
+  conversations.json         Généré localement, non versionné
+  memory.json                Généré localement, non versionné
 tests/
-  test_modules.py       Tests unitaires et persistance
+  test_ai_provider.py        Tests du fournisseur Ollama
+  test_modules.py            Tests des modules, stockage et interface
 ```
 
-Les règles métier sont isolées de Streamlit. Le stockage JSON peut ensuite être
-remplacé par SQLite ou une base distante sans modifier les modèles `app.py`.
+Le stockage actuel repose sur des fichiers JSON. Une éventuelle migration vers
+SQLite ou un autre stockage nécessitera une conception et des changements
+adaptés ; elle n'est pas garantie sans modification de l'application.

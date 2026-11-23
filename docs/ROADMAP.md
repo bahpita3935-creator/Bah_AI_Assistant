@@ -1,66 +1,56 @@
-# Feuille de route — BAH AI Assistant
+# Feuille de route — BAH AI ASSISTANT
 
-## Version 1.0 — Fondation
+Ce document distingue les capacités effectivement livrées en V2 des objectifs
+encore à réaliser en V3. Les objectifs V3 ne sont pas des fonctionnalités
+disponibles dans la version actuelle.
 
-- Interface Streamlit avec navigation et modules
-- Architecture modulaire dans `modules/`
-- Briefs programmation, business et réseaux sociaux
-- Portefeuille de projets BAH TECH GROUP
-- Tests unitaires des fonctions métier
+## V2 livrée
 
-## Version 1.1 — Données et observabilité
+- Application locale Streamlit avec navigation entre l'accueil, l'assistant,
+  les outils Programmation, Business, Réseaux sociaux et la liste des projets
+  BAH TECH.
+- Assistant Général et agents de conversation Programmation, Affaires
+  (libellé « Business » dans l'interface actuelle), Réseaux sociaux et BAH TECH.
+- Appels à Ollama local ; modèle par défaut `phi3`, configurable dans
+  l'application ; réponses en streaming.
+- Paramètres de génération actuels : `num_predict=256`,
+  `temperature=0.7`, `keep_alive="10m"`.
+- Historique des conversations et mémoire/préférences stockés localement en
+  JSON. Les conversations sont sélectionnées et isolées par identifiant ;
+  les faits libres de mémoire ne sont pas injectés automatiquement aux prompts.
+- Confirmation avant suppression d'une conversation.
+- Détection des flux Ollama incomplets : une fin sans `done=true` est signalée
+  comme erreur et n'est pas acceptée comme réponse complète.
+- Fichiers JSON de données et fichiers temporaires ciblés exclus de Git.
+- Tests unitaires et tests Streamlit `AppTest`. Dernière référence de livraison :
+  **59 tests réussis, 0 échec**.
 
-- Persistance locale SQLite
-- Journalisation des conversations
-- Gestion des paramètres utilisateur
-- Export des résultats en Markdown et PDF
-- Métriques d'utilisation anonymisées
+## Limites de la V2
 
-## Version 1.2 — Connecteurs IA
+- Phi3 peut ne pas respecter parfaitement certaines consignes.
+- Les données utilisateur restent locales et ne disposent pas de sauvegarde ou
+  de restauration intégrée.
+- La liste de projets BAH TECH est statique ; elle n'est pas un gestionnaire de
+  projets persistant.
+- Il n'y a ni RAG, ni recherche documentaire par projet, ni agent exécutant des
+  commandes, ni authentification multi-utilisateur.
+- Les agents Réseaux sociaux préparent des brouillons sans les publier.
+- Une conversation supprimée après confirmation ne peut pas être restaurée par
+  l'application.
 
-- Abstraction d'un fournisseur IA commun
-- Ollama en fournisseur local
-- Choix du modèle dans l'interface
-- Streaming des réponses
-- Historique des conversations par session
-- Limite des contextes et gestion des erreurs
+## À réaliser en V3
 
-## Version 1.3 — Qualité produit
+- Recherche, renommage, archivage et association des conversations aux projets.
+- Sauvegarde, export et restauration validée des données JSON.
+- Mémoire structurée et contrôlée plus finement par l'utilisateur.
+- Gestion persistante des projets (création, consultation, modification,
+  archivage et suppression).
+- Recherche documentaire/RAG local et, si nécessaire, base vectorielle.
+- Tableau de bord local pour les conversations et les projets.
+- Améliorations de diagnostic Ollama et configuration plus complète.
+- Authentification et rôles, si un usage multi-utilisateur est retenu.
+- Exécution d'outils seulement après conception de contrôles et autorisations.
+- Distribution Docker et pipeline CI GitHub Actions.
 
-- Authentification native Streamlit
-- Contrôle des droits par rôle
-- Validation Pydantic des entrées et sorties
-- Tests Streamlit `AppTest`
-- Pipeline GitHub Actions : lint, tests et compilation
-- Déploiement reproductible avec Python 3.12
-
-## Version 2.0 — IA locale complète avec Ollama
-
-- RAG sur documents locaux
-- Base vectorielle locale
-- Recherche des connaissances par projet
-- Agents spécialisés programmation, business, social media et projets
-- Exécution d'outils limitée et validée
-- Exécution locale par défaut, sans données sensibles envoyées à un service externe
-
-## Version 2.1 — Distribution
-
-- Conteneur Docker
-- Sauvegarde et restauration des données
-- Gestion des modèles Ollama
-- Téléchargement hors ligne des modèles
-- Monitoring santé Ollama et métriques
-- Procédure de mise à jour automatique
-
-## Cible technique
-
-- Python 3.12+
-- Streamlit 1.67+
-- Ollama avec modèles tels que `llama3.2`
-- SQLite pour les données locales
-- GitHub Actions pour CI/CD
-
-## Version 3.0 — Produit local complet
-
-La feuille de route détaillée vers la V3 est disponible dans
-[ROADMAP_V3.md](ROADMAP_V3.md).
+Le détail des objectifs est dans [ROADMAP_V3.md](ROADMAP_V3.md) et leur ordre
+proposé dans [V3_BACKLOG.md](V3_BACKLOG.md).
